@@ -1165,6 +1165,67 @@ struct ggml_threadpool_params ggml_threadpool_params_from_cpu_params(const cpu_p
     return tpp;
 }
 
+bool llama_threadpool_init(
+    struct llama_context * ctx,
+    const struct cpu_params & cpu_params,
+    const struct cpu_params & cpu_params_batch,
+    struct ggml_threadpool ** out_threadpool,
+    struct ggml_threadpool ** out_threadpool_batch,
+    void (**out_threadpool_free_fn)(struct ggml_threadpool *)
+) {
+    LOG_INF("%s: llama threadpool init, n_threads = %d\n", __func__, (int) cpu_params.n_threads);
+
+    auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (!cpu_dev) {
+        LOG_ERR("%s: no CPU backend found\n", __func__);
+        return false;
+    }
+    auto * reg = ggml_backend_dev_backend_reg(cpu_dev);
+    auto * ggml_threadpool_new_fn = (decltype(ggml_threadpool_new) *) ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_new");
+    auto * ggml_threadpool_free_fn = (decltype(ggml_threadpool_free) *) ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_free");
+
+    if (out_threadpool_free_fn) {
+        *out_threadpool_free_fn = ggml_threadpool_free_fn;
+    }
+
+    struct ggml_threadpool_params tpp_batch = ggml_threadpool_params_from_cpu_params(cpu_params_batch);
+    struct ggml_threadpool_params tpp = ggml_threadpool_params_from_cpu_params(cpu_params);
+
+    set_process_priority(cpu_params.priority);
+
+    struct ggml_threadpool * threadpool_batch = NULL;
+    if (!ggml_threadpool_params_match(&tpp, &tpp_batch)) {
+        threadpool_batch = ggml_threadpool_new_fn(&tpp_batch);
+        if (!threadpool_batch) {
+            LOG_ERR("%s: batch threadpool create failed : n_threads %d\n", __func__, tpp_batch.n_threads);
+            return false;
+        }
+
+        // Start the non-batch threadpool in the paused state
+        tpp.paused = true;
+    }
+
+    struct ggml_threadpool * threadpool = ggml_threadpool_new_fn(&tpp);
+    if (!threadpool) {
+        if (threadpool_batch) {
+            ggml_threadpool_free_fn(threadpool_batch);
+        }
+        LOG_ERR("%s: threadpool create failed : n_threads %d\n", __func__, tpp.n_threads);
+        return false;
+    }
+
+    llama_attach_threadpool(ctx, threadpool, threadpool_batch);
+
+    if (out_threadpool) {
+        *out_threadpool = threadpool;
+    }
+    if (out_threadpool_batch) {
+        *out_threadpool_batch = threadpool_batch;
+    }
+
+    return true;
+}
+
 //
 // Batch utils
 //

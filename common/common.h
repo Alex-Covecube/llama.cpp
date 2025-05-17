@@ -550,6 +550,15 @@ struct llama_model_params     common_model_params_to_llama  (      common_params
 struct llama_context_params   common_context_params_to_llama(const common_params & params);
 struct ggml_threadpool_params ggml_threadpool_params_from_cpu_params(const cpu_params & params);
 
+bool llama_threadpool_init(
+    struct llama_context * ctx,
+    const struct cpu_params & cpu_params,
+    const struct cpu_params & cpu_params_batch,
+    struct ggml_threadpool ** out_threadpool,
+    struct ggml_threadpool ** out_threadpool_batch,
+    void (**out_threadpool_free_fn)(struct ggml_threadpool *)
+);
+
 // clear LoRA adapters from context, then apply new list of adapters
 void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adapter_lora_info> & lora);
 
