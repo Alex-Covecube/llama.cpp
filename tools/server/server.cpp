@@ -1923,6 +1923,11 @@ struct server_context {
             return false;
         }
 
+        if (!llama_threadpool_init(ctx, params.cpuparams, params.cpuparams_batch, nullptr, nullptr, nullptr)) {
+            LOG_ERR("failed to initialize threadpool\n");
+            return false;
+        }
+
         vocab = llama_model_get_vocab(model);
 
         n_ctx = llama_n_ctx(ctx);

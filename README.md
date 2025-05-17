@@ -9,6 +9,13 @@
 
 Inference of Meta's [LLaMA](https://arxiv.org/abs/2302.13971) model (and others) in pure C/C++
 
+## Covecube Branch
+
+This is a custom branch to apply a number of changes / fixes to upstream.
+
+* Fixed threadpool initialization in llama-server, allowing for proper use of the *--cpu-range* and *--cpu-mask* options.
+* Added cascade lake support to ggml (with AVX-512 VNNI).
+
 ## Recent API changes
 
 - [Changelog for `libllama` API](https://github.com/ggml-org/llama.cpp/issues/9289)
