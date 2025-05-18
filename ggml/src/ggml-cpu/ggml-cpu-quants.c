@@ -3860,6 +3860,84 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
     sumf = wasm_f32x4_extract_lane(sumv, 0) + wasm_f32x4_extract_lane(sumv, 1) +
            wasm_f32x4_extract_lane(sumv, 2) + wasm_f32x4_extract_lane(sumv, 3);
+#elif defined(__AVX512F__) && defined(__AVX512VNNI__)
+    // Initialize accumulator with zeros
+    __m512 accf = _mm512_setzero_ps();
+
+    // Loop over the blocks 2 at a time
+    // Do not process the last block if it is not a multiple of 2
+    // This is because we are using AVX512 VNNI which requires 2 blocks to be processed at a time
+    for ( ; ib + 1 < nb; ib += 2) {
+        // combined scale for this block
+        const __m256 d1 = _mm256_set1_ps(GGML_FP16_TO_FP32(x[ib].d) * GGML_FP16_TO_FP32(y[ib].d));
+        const __m256 d2 = _mm256_set1_ps(GGML_FP16_TO_FP32(x[ib + 1].d) * GGML_FP16_TO_FP32(y[ib + 1].d));
+
+        __m512 d = _mm512_castps256_ps512(d1);   // cast to 512 bits
+        d = _mm512_insertf32x8(d, d2, 1);        // insert the second block
+
+        // load the quantized data
+        __m256i qx1 = _mm256_loadu_si256((const void *)x[ib].qs);
+        __m256i qx2 = _mm256_loadu_si256((const void *)x[ib + 1].qs);
+
+        __m256i qy1 = _mm256_loadu_si256((const void *)y[ib].qs);
+        __m256i qy2 = _mm256_loadu_si256((const void *)y[ib + 1].qs);
+
+        // Get absolute values of x vectors
+        __m256i ax1 = _mm256_sign_epi8(qx1, qx1);
+        __m256i ax2 = _mm256_sign_epi8(qx2, qx2);
+
+        // Reverse the sign of y vectors based on x
+        __m256i sy1 = _mm256_sign_epi8(qy1, qx1);
+        __m256i sy2 = _mm256_sign_epi8(qy2, qx2);
+
+        __m512i qx = _mm512_castsi256_si512(ax1);   // unsigned
+        __m512i qy = _mm512_castsi256_si512(sy1);   // signed
+
+        qx = _mm512_inserti64x4(qx, ax2, 1);
+        qy = _mm512_inserti64x4(qy, sy2, 1);
+
+        // fused int8 dot → int32 accumulate (VNNI)
+        __m512i dot32 = _mm512_dpbusds_epi32(_mm512_setzero_si512(), qx, qy);   // unsigned*signed
+
+        // convert to float and FMA with scale
+        __m512 dotfp = _mm512_cvtepi32_ps(dot32);
+        accf = _mm512_fmadd_ps(d, dotfp, accf);
+    }
+
+    // if there’s one block left, do it with a zero-upper-half trick
+    if (ib < nb) {
+        // scale
+        const __m256 d1 = _mm256_set1_ps(GGML_FP16_TO_FP32(x[ib].d) * GGML_FP16_TO_FP32(y[ib].d));
+
+        // cast your 256→512 and zero the upper half
+        __m512 d = _mm512_castps256_ps512(d1);
+        d = _mm512_insertf32x8(d, _mm256_setzero_ps(), 1);
+
+        // load quant blocks
+        __m256i qx1 = _mm256_loadu_si256((const void *)x[ib].qs);
+        __m256i qy1 = _mm256_loadu_si256((const void *)y[ib].qs);
+
+        // unpack sign & magnitude
+        __m256i ax1 = _mm256_sign_epi8(qx1, qx1);
+        __m256i sy1 = _mm256_sign_epi8(qy1, qx1);
+
+        // pack into 512 with zeros in high half
+        __m512i qx = _mm512_castsi256_si512(ax1);
+        qx = _mm512_inserti64x4(qx, _mm256_setzero_si256(), 1);
+
+        __m512i qy = _mm512_castsi256_si512(sy1);
+        qy = _mm512_inserti64x4(qy, _mm256_setzero_si256(), 1);
+
+        // fused dot+add
+        __m512i dot32 = _mm512_dpbusds_epi32(_mm512_setzero_si512(), qx, qy);   // unsigned*signed
+        __m512  dotfp = _mm512_cvtepi32_ps(dot32);
+        accf = _mm512_fmadd_ps(d, dotfp, accf);
+    }
+
+    // 5. horizontal add
+    sumf = _mm512_reduce_add_ps(accf);
+    *s = sumf;
+
 #elif defined(__AVX2__)
     // Initialize accumulator with zeros
     __m256 acc = _mm256_setzero_ps();
