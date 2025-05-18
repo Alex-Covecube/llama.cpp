@@ -3867,7 +3867,22 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     // Loop over the blocks 2 at a time
     // Do not process the last block if it is not a multiple of 2
     // This is because we are using AVX512 VNNI which requires 2 blocks to be processed at a time
+
+    // prefetch distance
+    // struct is ~34 bytes
+    // 4 blocks ahead = 4 * 34 = 136 bytes
+    const int prefetch_d = 4;
+
+    _mm_prefetch((const char*)x, _MM_HINT_T0);
+    _mm_prefetch((const char*)y, _MM_HINT_T0);
+
     for ( ; ib + 1 < nb; ib += 2) {
+        // prefetch 64 bytes ahead
+        if (ib + prefetch_d < nb) {
+            _mm_prefetch((const char*)x[ib+prefetch_d].qs, _MM_HINT_T0);
+            _mm_prefetch((const char*)y[ib+prefetch_d].qs, _MM_HINT_T0);
+        }
+
         // combined scale for this block
         const __m256 d1 = _mm256_set1_ps(GGML_FP16_TO_FP32(x[ib].d) * GGML_FP16_TO_FP32(y[ib].d));
         const __m256 d2 = _mm256_set1_ps(GGML_FP16_TO_FP32(x[ib + 1].d) * GGML_FP16_TO_FP32(y[ib + 1].d));
