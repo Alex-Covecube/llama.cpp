@@ -6,6 +6,12 @@
 #include "unary-ops.h"
 #include "vec.h"
 
+#include "iqk/iqk_quantize.h"
+#if GGML_USE_IQK_MULMAT
+#include "iqk/iqk_mul_mat.h"
+#include "iqk/iqk_config.h"
+#endif
+
 #include <float.h>
 
 // ggml_compute_forward_dup
@@ -5040,29 +5046,82 @@ void ggml_compute_forward_clamp(
                 ggml_compute_forward_clamp_f16(params, dst);
             } break;
         case GGML_TYPE_BF16:
+		case GGML_TYPE_BF16_R16:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
+		case GGML_TYPE_Q6_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q8_1:
+		case GGML_TYPE_Q8_0_X4:
+        case GGML_TYPE_Q8_1_X4:
+        case GGML_TYPE_Q8_2_X4:
         case GGML_TYPE_Q2_K:
+		case GGML_TYPE_Q2_K_R4:
         case GGML_TYPE_Q3_K:
+		case GGML_TYPE_Q3_K_R4:
         case GGML_TYPE_Q4_K:
+		case GGML_TYPE_Q4_K_R4:
         case GGML_TYPE_Q5_K:
+		case GGML_TYPE_Q5_K_R4:
         case GGML_TYPE_Q6_K:
+		case GGML_TYPE_Q6_K_R4:
+        case GGML_TYPE_Q8_K_R8:
+        case GGML_TYPE_Q8_KV_R8:
+        case GGML_TYPE_Q8_KR8:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
         case GGML_TYPE_IQ2_XXS:
+		case GGML_TYPE_IQ2_XXS_R4:
         case GGML_TYPE_IQ2_XS:
+		case GGML_TYPE_IQ2_XS_R4:
         case GGML_TYPE_IQ3_XXS:
+		case GGML_TYPE_IQ3_XXS_R4:
         case GGML_TYPE_IQ1_S:
         case GGML_TYPE_IQ1_M:
+		case GGML_TYPE_IQ1_BN:
+        case GGML_TYPE_IQ2_BN:
+        case GGML_TYPE_IQ2_BN_R4:
         case GGML_TYPE_IQ4_NL:
+		case GGML_TYPE_IQ4_NL_R4:
+        case GGML_TYPE_IQ4_XS_R8:
+        case GGML_TYPE_Q4_0_R8:
+        case GGML_TYPE_Q5_0_R4:
+        case GGML_TYPE_Q6_0_R4:
+        case GGML_TYPE_I2_S:
+        case GGML_TYPE_Q8_0_R8:
         case GGML_TYPE_IQ4_XS:
+		case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ4_KS_R4:
+        case GGML_TYPE_IQ5_KS_R4:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ2_K:
+        case GGML_TYPE_IQ2_K_R4:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ3_K:
+        case GGML_TYPE_IQ4_K:
+        case GGML_TYPE_IQ3_K_R4:
+        case GGML_TYPE_IQ4_K_R4:
+        case GGML_TYPE_IQ5_K:
+        case GGML_TYPE_IQ5_K_R4:
+        case GGML_TYPE_IQ6_K:
         case GGML_TYPE_IQ3_S:
+		case GGML_TYPE_IQ3_S_R4:
         case GGML_TYPE_IQ2_S:
+		case GGML_TYPE_IQ2_S_R4:
+        case GGML_TYPE_IQ1_S_R4:
+        case GGML_TYPE_IQ1_M_R4:
         case GGML_TYPE_Q8_K:
+		case GGML_TYPE_Q8_K64:
+        case GGML_TYPE_Q8_K128:
+        case GGML_TYPE_Q8_KV:
+        case GGML_TYPE_Q8_K16:
+        case GGML_TYPE_Q8_K32:
+        // case GGML_TYPE_Q4_0_4_4:
+        // case GGML_TYPE_Q4_0_4_8:
+        // case GGML_TYPE_Q4_0_8_8:
         case GGML_TYPE_I8:
         case GGML_TYPE_I16:
         case GGML_TYPE_I32:
@@ -7019,6 +7078,19 @@ static void ggml_compute_forward_flash_attn_ext_f16(
     if (logit_softcap != 0) {
         scale /= logit_softcap;
     }
+
+#if GGML_USE_IQK_MULMAT
+    if (iqk_flash_attn_noalibi(q->type, mask->type, max_bias,
+                q->ne[3], q->ne[2], q->nb[3], q->nb[2],
+                k->ne[3], k->ne[2], k->nb[3], k->nb[2],
+                v->ne[3], v->ne[2], v->nb[3], v->nb[2],
+                dst->ne[2], dst->ne[1], dst->nb[1],
+                k->type, v->type,
+                DK, DV, neq1, nek1, q->nb[1], k->nb[1], v->nb[1], mask->nb[1],
+                q->data, k->data, v->data, mask->data,
+                scale, logit_softcap, (float *)dst->data,
+                params->wdata, (barrier_t)ggml_barrier, (void *)params->threadpool, ith, nth)) return;
+#endif
 
     const uint32_t n_head      = neq2;
     const uint32_t n_head_log2 = 1u << (uint32_t) floor(log2(n_head));

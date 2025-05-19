@@ -4,7 +4,11 @@ This is a custom branch to apply a number of changes / fixes to upstream for CPU
 
 * Fixed threadpool initialization in llama-server, allowing for proper use of the `--cpu-range` and `--cpu-mask` options.
 * Added cascade lake support and select optimizations.
-* Build against: `/.devops/intel.Dockerfile`.
+* Merged ik_llama's Flash MLA.
+
+### Build / Run
+* Build against: `/.devops/intel.Dockerfile`
+* Run on the same hardware, as optimizations are applied at build time (native build).
 
 ---
 
