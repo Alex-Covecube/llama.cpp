@@ -32,11 +32,25 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/vec.h
         ggml-cpu/vec.cpp
         ggml-cpu/ops.h
-        ggml-cpu/ops.cpp
-        )
+        ggml-cpu/ops.cpp)
 
     target_compile_features(${GGML_CPU_NAME} PRIVATE c_std_11 cxx_std_17)
     target_include_directories(${GGML_CPU_NAME} PRIVATE . ggml-cpu)
+
+    if (GGML_IQK)
+        target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_IQK_MULMAT)
+        target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_IQK_FLASH_ATTENTION)
+        target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_IQK_FA_ALL_QUANTS)
+
+        list(APPEND GGML_CPU_SOURCES
+                ggml-cpu/iqk/iqk_config.h
+                ggml-cpu/iqk/iqk_quantize.h
+                ggml-cpu/iqk/iqk_quantize.cpp
+                ggml-cpu/iqk/iqk_mul_mat.h
+                ggml-cpu/iqk/iqk_mul_mat.cpp
+                ggml-cpu/iqk/iqk_flash_impl.h
+                ggml-cpu/iqk/iqk_flash_attn.cpp)
+    endif()
 
     if (APPLE AND GGML_ACCELERATE)
         find_library(ACCELERATE_FRAMEWORK Accelerate)
