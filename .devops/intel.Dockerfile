@@ -50,17 +50,23 @@ COPY --from=build /app/full /app
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y \
-    git \
-    python3 \
-    python3-pip \
-    && pip install --upgrade pip setuptools wheel \
-    && pip install -r requirements.txt \
-    && apt autoremove -y \
-    && apt clean -y \
-    && rm -rf /tmp/* /var/tmp/* \
-    && find /var/cache/apt/archives /var/lib/apt/lists -not -name lock -type f -delete \
-    && find /var/cache -type f -delete
+ && apt-get install -y \
+      git \
+      python3 \
+      python3-pip \
+ && pip install \
+      --break-system-packages \
+      --ignore-installed \
+      --upgrade pip setuptools wheel \
+ && pip install \
+      --break-system-packages \
+      --ignore-installed \
+      -r requirements.txt \
+ && apt autoremove -y \
+ && apt clean -y \
+ && rm -rf /tmp/* /var/tmp/* \
+ && find /var/cache/apt/archives /var/lib/apt/lists -not -name lock -type f -delete \
+ && find /var/cache -type f -delete
 
 
 ENTRYPOINT ["/app/tools.sh"]
