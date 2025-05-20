@@ -6,6 +6,12 @@
 #include "ggml-cpu/ggml-cpu-impl.h"
 #include "ggml-cpu.h"
 
+#if GGML_USE_IQK_MULMAT
+#include "iqk/iqk_config.h"
+#include "iqk/iqk_mul_mat.h"
+#include "iqk/iqk_quantize.h"
+#endif
+
 #include <math.h>
 #include <string.h>
 #include <assert.h>
@@ -2519,6 +2525,11 @@ void dequantize_row_iq4_xs(const block_iq4_xs * GGML_RESTRICT x, float * GGML_RE
 //===================================== Q8_K ==============================================
 
 void quantize_row_q8_K_ref(const float * GGML_RESTRICT x, block_q8_K * GGML_RESTRICT y, int64_t k) {
+#if GGML_USE_IQK_MULMAT
+    iqk_quantize_row_q8_K(x, y, k);
+    reuturn;
+#endif
+
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
 

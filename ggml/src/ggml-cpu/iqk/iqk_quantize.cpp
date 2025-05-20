@@ -483,7 +483,7 @@ void quantize_row_q8_K64_ref(const float * x, block_q8_K64 * y, int64_t k) {
     }
     auto sumf = vmulq_f32(vld1q_f32(dptr), vcvtq_f32_s32(qsum));
     vst1q_f32(dptr + 4, sumf);
-#elif defined __AVX__
+#elif defined(__AVX2__)
     __m128 max[4] = {};
     __m128 sign_bit = _mm_set1_ps(-0.f);
     for (int j = 0; j < k; j += 16) {
@@ -732,7 +732,7 @@ void quantize_row_q8_0_x4(const float * x, void * vy, int64_t k) {
             }
         }
     }
-#else
+#elif defined(__AVX2__)
     for (int i = 0; i < nb; i++) {
         int i4 = i/4, ir = i%4;
         // Load elements into 4 AVX vectors
@@ -866,7 +866,7 @@ void quantize_row_q8_1_x4_T(const float * x, Block * y, int64_t k) {
             }
         }
     }
-#else
+#elif defined(__AVX2__)
     for (int i = 0; i < nb; i++) {
         int i4 = i/4, ir = i%4;
         // Load elements into 4 AVX vectors
@@ -5988,6 +5988,10 @@ static void repack_q8_KV(int nrows, int n_per_row, const char * cx, char * cy, [
     auto row_size_x = ggml_row_size(GGML_TYPE_Q8_KV,    n_per_row);
     auto row_size_y = ggml_row_size(GGML_TYPE_Q8_KV_R8, n_per_row);
     const int8_t * x8[8];
+    
+    // Define y for the generic (non-SIMD) branch
+    block_q8_0_r8 * y = (block_q8_0_r8 *)cy;
+    
 #ifdef __ARM_NEON
     int8x16x2_t m0, m1, m2, m3;
 #endif
@@ -6051,8 +6055,8 @@ static void repack_q8_KV(int nrows, int n_per_row, const char * cx, char * cy, [
             // TODO
             for (int l = 0; l < 4; ++l) {
                 for (int k = 0; k < 8; ++k) for (int i = 0; i < 4; ++i) {
-                    y[ib].qs[32*l+4*k+i+  0] = x8[k][ib].qs[i+4*l+ 0];
-                    y[ib].qs[32*l+4*k+i+128] = x8[k][ib].qs[i+4*l+16];
+                    y[ib].qs[32*l+4*k+i+  0] = x8[k][16*ib + i+4*l+ 0];
+                    y[ib].qs[32*l+4*k+i+128] = x8[k][16*ib + i+4*l+16];
                 }
             }
 #endif
