@@ -3870,8 +3870,8 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
     // prefetch distance
     // struct is ~34 bytes
-    // 4 blocks ahead = 4 * 34 = 136 bytes
-    const int prefetch_d = 4;
+    // 2 blocks ahead = 2 * 34 = 68 bytes
+    const int prefetch_d = 2;
 
     _mm_prefetch((const char*)x, _MM_HINT_T0);
     _mm_prefetch((const char*)y, _MM_HINT_T0);
