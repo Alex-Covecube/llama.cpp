@@ -17,7 +17,19 @@ RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
         && export OPT_SYCL_F16="-DGGML_SYCL_F16=ON"; \
     fi && \
     echo "Building with dynamic libs" && \
-    cmake -B build -DGGML_OPENMP=OFF -DGGML_NATIVE=ON -DGGML_SYCL=OFF -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_BACKEND_DL=OFF -DGGML_CPU_ALL_VARIANTS=OFF -DLLAMA_BUILD_TESTS=OFF ${OPT_SYCL_F16} && \
+    cmake -B build \
+        -DGGML_IQK=ON \
+        -DGGML_OPENMP=OFF \
+        -DGGML_NATIVE=ON \
+        -DGGML_SYCL=OFF \
+        -DCMAKE_C_COMPILER=icx \
+        -DCMAKE_CXX_COMPILER=icpx \
+        -DGGML_BACKEND_DL=OFF \
+        -DGGML_CPU_ALL_VARIANTS=OFF \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DCMAKE_C_FLAGS="-g" \
+        -DCMAKE_CXX_FLAGS="-g" \
+        ${OPT_SYCL_F16} && \
     cmake --build build --config Release -j$(nproc)
 
 RUN mkdir -p /app/lib && \
