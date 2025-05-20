@@ -50,6 +50,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
                 ggml-cpu/iqk/iqk_mul_mat.cpp
                 ggml-cpu/iqk/iqk_flash_impl.h
                 ggml-cpu/iqk/iqk_flash_attn.cpp)
+
+        set_source_files_properties(ggml-cpu/iqk/iqk_mul_mat.cpp PROPERTIES COMPILE_FLAGS "-O0")
     endif()
 
     if (APPLE AND GGML_ACCELERATE)
