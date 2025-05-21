@@ -18,7 +18,6 @@ RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
     fi && \
     echo "Building with dynamic libs" && \
     cmake -B build \
-        -DGGML_IQK=ON \
         -DGGML_OPENMP=OFF \
         -DGGML_NATIVE=ON \
         -DGGML_SYCL=OFF \
