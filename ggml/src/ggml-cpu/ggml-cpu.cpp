@@ -9,6 +9,10 @@
 #include <cctype>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <unordered_map>
+#include <fstream>
+#include <sstream>
 
 #ifdef GGML_USE_CPU_HBM
 #    include "ggml-cpu-hbm.h"
@@ -32,6 +36,101 @@
 #    include <sys/sysctl.h>
 #    include <sys/types.h>
 #endif
+
+#if defined(__gnu_linux__)
+#include <numaif.h>
+#endif
+
+// Contexts
+struct ggml_backend_cpu_context {
+    int                 n_threads;
+    ggml_threadpool_t   threadpool;
+
+    uint8_t *           work_data;
+    size_t              work_size;
+
+    ggml_abort_callback abort_callback;
+    void *              abort_callback_data;
+};
+
+struct ggml_backend_cpu_reg_context {
+    std::recursive_mutex devices_mutex;
+    std::unordered_map<size_t, ggml_backend_dev_t> devices;
+};
+
+struct ggml_backend_cpu_device_context {
+    std::string description = "CPU";
+
+    // When >= 0, the CPU backend is associated with a NUMA node.
+    // This is used to lock the threadpool in-place.
+    // This is also used to control memory allocation on the NUMA node.
+    int numa_node = -1;
+
+    ggml_backend_t backend = NULL;
+    ggml_backend_buffer_type_t buft = NULL;
+
+    std::recursive_mutex mutex;
+
+    ggml_backend_cpu_device_context() {
+#ifdef __APPLE__
+        size_t len = 0;
+        if (!sysctlbyname("machdep.cpu.brand_string", NULL, &len, NULL, 0)) {
+            description.resize(len);
+            sysctlbyname("machdep.cpu.brand_string", &description[0], &len, NULL, 0); // NOLINT
+        }
+#elif defined(__linux__)
+        FILE * f = fopen("/proc/cpuinfo", "r");
+        if (f) {
+            char buf[1024];
+            while (fgets(buf, sizeof(buf), f)) {
+                if (strncmp(buf, "model name", 10) == 0) {
+                    char * p = strchr(buf, ':');
+                    if (p) {
+                        p++;
+                        while (std::isspace(*p)) {
+                            p++;
+                        }
+                        while (std::isspace(p[strlen(p) - 1])) {
+                            p[strlen(p) - 1] = '\0';
+                        }
+                        description = p;
+                        break;
+                    }
+                }
+            }
+            fclose(f);
+        }
+#elif defined(_WIN32)
+        HKEY hKey;
+        if (RegOpenKeyEx(HKEY_LOCAL_MACHINE,
+                        TEXT("HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"),
+                        0,
+                        KEY_READ,
+                        &hKey) == ERROR_SUCCESS) {
+            DWORD cpu_brand_size = 0;
+            if (RegQueryValueExA(hKey,
+                                "ProcessorNameString",
+                                NULL,
+                                NULL,
+                                NULL,
+                                &cpu_brand_size) == ERROR_SUCCESS) {
+                description.resize(cpu_brand_size);
+                if (RegQueryValueExA(hKey,
+                                    "ProcessorNameString",
+                                    NULL,
+                                    NULL,
+                                    (LPBYTE)&description[0], // NOLINT
+                                    &cpu_brand_size) == ERROR_SUCCESS) {
+                    if (description.find('\0') != std::string::npos) {
+                        description.resize(description.find('\0'));
+                    }
+                }
+            }
+            RegCloseKey(hKey);
+        }
+#endif
+    }
+};
 
 // ggml-backend interface
 
@@ -82,17 +181,6 @@ static bool ggml_backend_cpu_is_extra_buffer_type(ggml_backend_buffer_type_t buf
 
 // CPU backend - backend (stream)
 
-struct ggml_backend_cpu_context {
-    int                 n_threads;
-    ggml_threadpool_t   threadpool;
-
-    uint8_t *           work_data;
-    size_t              work_size;
-
-    ggml_abort_callback abort_callback;
-    void *              abort_callback_data;
-};
-
 static const char * ggml_backend_cpu_get_name(ggml_backend_t backend) {
     return "CPU";
 
@@ -104,6 +192,11 @@ static void ggml_backend_cpu_free(ggml_backend_t backend) {
     delete[] cpu_ctx->work_data;
     delete cpu_ctx;
     delete backend;
+}
+
+static void ggml_backend_cpu_synchronize(ggml_backend_t backend) {
+    // this is no-op because we don't have any async operations
+    GGML_UNUSED(backend);
 }
 
 struct ggml_backend_plan_cpu {
@@ -178,7 +271,7 @@ static const struct ggml_backend_i ggml_backend_cpu_i = {
     /* .set_tensor_async        = */ NULL,
     /* .get_tensor_async        = */ NULL,
     /* .cpy_tensor_async        = */ NULL,
-    /* .synchronize             = */ NULL,
+    /* .synchronize             = */ ggml_backend_cpu_synchronize,
     /* .graph_plan_create       = */ ggml_backend_cpu_graph_plan_create,
     /* .graph_plan_free         = */ ggml_backend_cpu_graph_plan_free,
     /* .graph_plan_update       = */ NULL,
@@ -193,7 +286,7 @@ static ggml_guid_t ggml_backend_cpu_guid(void) {
     return &guid;
 }
 
-ggml_backend_t ggml_backend_cpu_init(void) {
+ggml_backend_t ggml_backend_cpu_init_backend_dev(ggml_backend_dev_t backend_dev) {
     // initialize CPU backend now to avoid slowing the first graph computation
     ggml_cpu_init();
 
@@ -212,7 +305,7 @@ ggml_backend_t ggml_backend_cpu_init(void) {
     ggml_backend_t cpu_backend = new ggml_backend {
         /* .guid      = */ ggml_backend_cpu_guid(),
         /* .interface = */ ggml_backend_cpu_i,
-        /* .device    = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
+        /* .device    = */ backend_dev,
         /* .context   = */ ctx,
     };
 
@@ -224,6 +317,10 @@ ggml_backend_t ggml_backend_cpu_init(void) {
     return cpu_backend;
 }
 
+ggml_backend_t ggml_backend_cpu_init(void) {
+    return ggml_backend_cpu_init_backend_dev(ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0));
+}
+
 bool ggml_backend_is_cpu(ggml_backend_t backend) {
     return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_cpu_guid());
 }
@@ -231,20 +328,54 @@ bool ggml_backend_is_cpu(ggml_backend_t backend) {
 void ggml_backend_cpu_set_n_threads(ggml_backend_t backend_cpu, int n_threads) {
     GGML_ASSERT(ggml_backend_is_cpu(backend_cpu));
 
-    struct ggml_backend_cpu_context * ctx = (struct ggml_backend_cpu_context *)backend_cpu->context;
+    auto ctx = (struct ggml_backend_cpu_context *)backend_cpu->context;
+
+    auto dev_ctx = (struct ggml_backend_cpu_device_context *)backend_cpu->device->context;
+
+    if (dev_ctx->numa_node >= 0) {
+        // n_threads are fixed, cannot be changed
+        GGML_LOG_DEBUG("%s: %s: cannot change n_threads for CPU backend associated with a NUMA node %d\n", 
+            __func__, ggml_backend_cpu_get_name(backend_cpu), dev_ctx->numa_node);
+
+        return;
+    }
+
     ctx->n_threads = n_threads;
 }
 
 void ggml_backend_cpu_set_threadpool(ggml_backend_t backend_cpu, ggml_threadpool_t threadpool) {
     GGML_ASSERT(ggml_backend_is_cpu(backend_cpu));
 
-    struct ggml_backend_cpu_context * ctx = (struct ggml_backend_cpu_context *)backend_cpu->context;
+    auto ctx = (struct ggml_backend_cpu_context *)backend_cpu->context;
+
+    auto dev_ctx = (struct ggml_backend_cpu_device_context *)backend_cpu->device->context;
+
+    if (dev_ctx->numa_node >= 0) {
+        // threadpool is fixed, cannot be changed
+        GGML_LOG_DEBUG("%s: %s: cannot change threadpool for CPU backend associated with a NUMA node %d\n", 
+            __func__, ggml_backend_cpu_get_name(backend_cpu), dev_ctx->numa_node);
+
+        return;
+    }
 
     if (ctx->threadpool && ctx->threadpool != threadpool) {
         // already had a different threadpool, pause/suspend it before switching
         ggml_threadpool_pause(ctx->threadpool);
+
+        GGML_LOG_INFO("%s: %s: using new threadpool %p\n", __func__, ggml_backend_cpu_get_name(backend_cpu), (void*)threadpool);
     }
+
     ctx->threadpool = threadpool;
+}
+
+void ggml_backend_cpu_set_numa_node(ggml_backend_t backend_cpu, int numa_node) {
+    GGML_ASSERT(ggml_backend_is_cpu(backend_cpu));
+
+    auto ctx = (struct ggml_backend_cpu_device_context *)backend_cpu->device->context;
+
+    GGML_LOG_INFO("%s: %s: using NUMA node %d\n", __func__, ggml_backend_cpu_get_name(backend_cpu), numa_node);
+
+    ctx->numa_node = numa_node;
 }
 
 void ggml_backend_cpu_set_abort_callback(ggml_backend_t backend_cpu, ggml_abort_callback abort_callback, void * abort_callback_data) {
@@ -254,72 +385,6 @@ void ggml_backend_cpu_set_abort_callback(ggml_backend_t backend_cpu, ggml_abort_
     ctx->abort_callback = abort_callback;
     ctx->abort_callback_data = abort_callback_data;
 }
-
-// CPU backend - device
-
-struct ggml_backend_cpu_device_context {
-    std::string description = "CPU";
-
-    ggml_backend_cpu_device_context() {
-#ifdef __APPLE__
-        size_t len = 0;
-        if (!sysctlbyname("machdep.cpu.brand_string", NULL, &len, NULL, 0)) {
-            description.resize(len);
-            sysctlbyname("machdep.cpu.brand_string", &description[0], &len, NULL, 0); // NOLINT
-        }
-#elif defined(__linux__)
-        FILE * f = fopen("/proc/cpuinfo", "r");
-        if (f) {
-            char buf[1024];
-            while (fgets(buf, sizeof(buf), f)) {
-                if (strncmp(buf, "model name", 10) == 0) {
-                    char * p = strchr(buf, ':');
-                    if (p) {
-                        p++;
-                        while (std::isspace(*p)) {
-                            p++;
-                        }
-                        while (std::isspace(p[strlen(p) - 1])) {
-                            p[strlen(p) - 1] = '\0';
-                        }
-                        description = p;
-                        break;
-                    }
-                }
-            }
-            fclose(f);
-        }
-#elif defined(_WIN32)
-        HKEY hKey;
-        if (RegOpenKeyEx(HKEY_LOCAL_MACHINE,
-                        TEXT("HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"),
-                        0,
-                        KEY_READ,
-                        &hKey) == ERROR_SUCCESS) {
-            DWORD cpu_brand_size = 0;
-            if (RegQueryValueExA(hKey,
-                                "ProcessorNameString",
-                                NULL,
-                                NULL,
-                                NULL,
-                                &cpu_brand_size) == ERROR_SUCCESS) {
-                description.resize(cpu_brand_size);
-                if (RegQueryValueExA(hKey,
-                                    "ProcessorNameString",
-                                    NULL,
-                                    NULL,
-                                    (LPBYTE)&description[0], // NOLINT
-                                    &cpu_brand_size) == ERROR_SUCCESS) {
-                    if (description.find('\0') != std::string::npos) {
-                        description.resize(description.find('\0'));
-                    }
-                }
-            }
-            RegCloseKey(hKey);
-        }
-#endif
-    }
-};
 
 static const char * ggml_backend_cpu_device_get_name(ggml_backend_dev_t dev) {
     return "CPU";
@@ -333,6 +398,32 @@ static const char * ggml_backend_cpu_device_get_description(ggml_backend_dev_t d
     return ctx->description.c_str();
 }
 
+static size_t ggml_cpu_get_numa_node_memory(int numa_node) {
+#if defined(__gnu_linux__)
+    std::string path = "/sys/devices/system/node/node" + std::to_string(numa_node) + "/meminfo";
+    std::ifstream file(path);
+    if (file.is_open()) {
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.find("Node") == 0 && line.find("MemTotal:") != std::string::npos) {
+                auto pos = line.find(':');
+                if (pos != std::string::npos) {
+                    std::string mem_str = line.substr(pos + 1);
+                    // Remove leading/trailing whitespace
+                    mem_str.erase(0, mem_str.find_first_not_of(" \t"));
+                    mem_str.erase(mem_str.find_last_not_of(" \t") + 1);
+                    long long mem_kb = std::stoll(mem_str);
+                    // Convert kB to bytes
+                    return static_cast<size_t>(mem_kb) * 1024;
+                }
+            }
+        }
+    }
+#endif
+
+    return 0;
+}
+
 static void ggml_backend_cpu_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
 #ifdef _WIN32
     MEMORYSTATUSEX status;
@@ -341,6 +432,18 @@ static void ggml_backend_cpu_device_get_memory(ggml_backend_dev_t dev, size_t * 
     *total = status.ullTotalPhys;
     *free = status.ullAvailPhys;
 #else
+    auto ctx = (struct ggml_backend_cpu_device_context *)dev->context;
+    if (ctx->numa_node >= 0) {
+        // use NUMA node memory
+        *total = ggml_cpu_get_numa_node_memory(ctx->numa_node);
+        *free = *total;
+
+        if (*total > 0) {
+            return;
+        }
+    }
+
+    // use system memory
     long pages = sysconf(_SC_PHYS_PAGES);
     long page_size = sysconf(_SC_PAGE_SIZE);
     *total = pages * page_size;
@@ -370,16 +473,41 @@ static void ggml_backend_cpu_device_get_props(ggml_backend_dev_t dev, struct ggm
 }
 
 static ggml_backend_t ggml_backend_cpu_device_init_backend(ggml_backend_dev_t dev, const char * params) {
-    return ggml_backend_cpu_init();
+    struct ggml_backend_cpu_device_context * ctx = (struct ggml_backend_cpu_device_context *)dev->context;
 
-    GGML_UNUSED(dev);
+    std::lock_guard<std::recursive_mutex> lock(ctx->mutex);
+
+    if (ctx->backend) {
+        // already initialized
+        return ctx->backend;
+    }
+    
+    ctx->backend = ggml_backend_cpu_init_backend_dev(dev);
+    if (ctx->backend == NULL) {
+        return NULL;
+    }
+
+    return ctx->backend;
+
     GGML_UNUSED(params);
 }
 
 static ggml_backend_buffer_type_t ggml_backend_cpu_device_get_buffer_type(ggml_backend_dev_t dev) {
-    return ggml_backend_cpu_buffer_type();
+    struct ggml_backend_cpu_device_context * ctx = (struct ggml_backend_cpu_device_context *)dev->context;
+    
+    std::lock_guard<std::recursive_mutex> lock(ctx->mutex);
 
-    GGML_UNUSED(dev);
+    if (ctx->buft) {
+        return ctx->buft;
+    }
+    
+    if (ctx->numa_node < 0) {
+        ctx->buft = ggml_backend_cpu_buffer_type();
+    } else {
+        ctx->buft = ggml_backend_cpu_buffer_type_numa(dev, ctx->numa_node);
+    }
+    
+    return ctx->buft;
 }
 
 static ggml_backend_buffer_t ggml_backend_cpu_device_buffer_from_host_ptr(ggml_backend_dev_t dev, void * ptr, size_t size, size_t max_tensor_size) {
@@ -479,23 +607,56 @@ static const char * ggml_backend_cpu_reg_get_name(ggml_backend_reg_t reg) {
     GGML_UNUSED(reg);
 }
 
-static size_t ggml_backend_cpu_reg_get_device_count(ggml_backend_reg_t reg) {
-    return 1;
-
-    GGML_UNUSED(reg);
-}
-
 static ggml_backend_dev_t ggml_backend_cpu_reg_get_device(ggml_backend_reg_t reg, size_t index) {
-    GGML_ASSERT(index == 0);
+    GGML_LOG_DEBUG("%s: Get CPU device %zu\n", __func__, index);
 
-    static ggml_backend_cpu_device_context ctx;
-    static ggml_backend_device ggml_backend_cpu_device = {
+    ggml_backend_cpu_reg_context * reg_ctx = (ggml_backend_cpu_reg_context *) reg->context;
+
+    std::lock_guard<std::recursive_mutex> lock(reg_ctx->devices_mutex);
+
+    auto it = reg_ctx->devices.find(index);
+    if (it != reg_ctx->devices.end()) {
+        return it->second;
+    }
+
+    ggml_backend_cpu_device_context * device_ctx = new ggml_backend_cpu_device_context;
+    if (device_ctx == NULL) {
+        return NULL;
+    }
+
+    ggml_backend_device * ggml_backend_cpu_device = new ggml_backend_device {
         /* .iface   = */ ggml_backend_cpu_device_i,
         /* .reg     = */ reg,
-        /* .context = */ &ctx,
+        /* .context = */ device_ctx,
     };
 
-    return &ggml_backend_cpu_device;
+    if (ggml_backend_cpu_device == NULL) {
+        delete device_ctx;
+        return NULL;
+    }
+
+    reg_ctx->devices[index] = ggml_backend_cpu_device;
+
+    GGML_LOG_DEBUG("%s: created CPU device %zu\n", __func__, index);
+
+    return ggml_backend_cpu_device;
+}
+
+static size_t ggml_backend_cpu_reg_get_device_count(ggml_backend_reg_t reg) {
+   GGML_LOG_DEBUG("%s: Get CPU device count\n", __func__);
+
+   ggml_backend_cpu_reg_context * ctx = (ggml_backend_cpu_reg_context *) reg->context;
+   std::lock_guard<std::recursive_mutex> lock(ctx->devices_mutex);
+
+   // Return at least 1 device
+   if (ctx->devices.empty()) {
+       auto device = ggml_backend_cpu_reg_get_device(reg, 0);
+       if (device == NULL) {
+           return 0;
+       }
+   }
+   
+   return 1;
 }
 
 // This is intended to replace the the ggml_cpu_has_* functions when loading the CPU backend dynamically,
@@ -625,12 +786,6 @@ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const ch
     if (strcmp(name, "ggml_backend_set_abort_callback") == 0) {
         return (void *)ggml_backend_cpu_set_abort_callback;
     }
-    if (strcmp(name, "ggml_backend_cpu_numa_init") == 0) {
-        return (void *)ggml_numa_init;
-    }
-    if (strcmp(name, "ggml_backend_cpu_is_numa") == 0) {
-        return (void *)ggml_is_numa;
-    }
 
     // threadpool - TODO:  move to ggml-base
     if (strcmp(name, "ggml_threadpool_new") == 0) {
@@ -641,6 +796,9 @@ static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const ch
     }
     if (strcmp(name, "ggml_backend_cpu_set_threadpool") == 0) {
         return (void *)ggml_backend_cpu_set_threadpool;
+    }
+    if (strcmp(name, "ggml_backend_cpu_set_numa_node") == 0) {
+        return (void *)ggml_backend_cpu_set_numa_node;
     }
 
     return NULL;
@@ -659,11 +817,15 @@ ggml_backend_reg_t ggml_backend_cpu_reg(void) {
     // init CPU feature detection
     ggml_cpu_init();
 
+    static struct ggml_backend_cpu_reg_context ctx;
+
     static struct ggml_backend_reg ggml_backend_cpu_reg = {
         /* .api_version = */ GGML_BACKEND_API_VERSION,
         /* .iface       = */ ggml_backend_cpu_reg_i,
-        /* .context     = */ NULL,
+        /* .context     = */ &ctx,
     };
+
+    GGML_LOG_DEBUG("%s: CPU backend reg %p\n", __func__, (void*) &ggml_backend_cpu_reg);
 
     return &ggml_backend_cpu_reg;
 }

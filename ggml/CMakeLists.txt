@@ -190,6 +190,7 @@ set   (GGML_METAL_MACOSX_VERSION_MIN "" CACHE STRING
 set   (GGML_METAL_STD "" CACHE STRING       "ggml: metal standard version (-std flag)")
 option(GGML_OPENMP                          "ggml: use OpenMP"                                ON)
 option(GGML_RPC                             "ggml: use RPC"                                   OFF)
+option(GGML_NUMA                            "ggml: use NUMA"                                  OFF)
 option(GGML_SYCL                            "ggml: use SYCL"                                  OFF)
 option(GGML_SYCL_F16                        "ggml: use 16 bit floats for sycl calculations"   OFF)
 option(GGML_SYCL_GRAPH                      "ggml: enable graphs in the SYCL backend"         ON)
@@ -267,6 +268,7 @@ set(GGML_PUBLIC_HEADERS
     include/ggml-kompute.h
     include/ggml-opt.h
     include/ggml-metal.h
+    include/ggml-numa.h
     include/ggml-rpc.h
     include/ggml-sycl.h
     include/ggml-vulkan.h

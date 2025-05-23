@@ -86,6 +86,8 @@ GGML_API void ggml_log_callback_default(enum ggml_log_level level, const char * 
 #define GGML_LOG_DEBUG(...) ggml_log_internal(GGML_LOG_LEVEL_DEBUG, __VA_ARGS__)
 #define GGML_LOG_CONT(...)  ggml_log_internal(GGML_LOG_LEVEL_CONT , __VA_ARGS__)
 
+#define GGML_LOG_DEBUG1(...) ggml_log_internal(GGML_LOG_LEVEL_INFO, __VA_ARGS__)
+
 #define GGML_DEBUG 0
 
 #if (GGML_DEBUG >= 1)
@@ -313,6 +315,7 @@ struct ggml_cgraph ggml_graph_view(struct ggml_cgraph * cgraph, int i0, int i1);
 // Memory allocation
 
 GGML_API void * ggml_aligned_malloc(size_t size);
+GGML_API void * ggml_aligned_malloc_numa(size_t size, int numa_node);
 GGML_API void ggml_aligned_free(void * ptr, size_t size);
 
 // FP16 to FP32 conversion

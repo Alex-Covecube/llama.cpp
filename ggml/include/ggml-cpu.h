@@ -21,19 +21,6 @@ extern "C" {
         void *              abort_callback_data;
     };
 
-    // numa strategies
-    enum ggml_numa_strategy {
-        GGML_NUMA_STRATEGY_DISABLED   = 0,
-        GGML_NUMA_STRATEGY_DISTRIBUTE = 1,
-        GGML_NUMA_STRATEGY_ISOLATE    = 2,
-        GGML_NUMA_STRATEGY_NUMACTL    = 3,
-        GGML_NUMA_STRATEGY_MIRROR     = 4,
-        GGML_NUMA_STRATEGY_COUNT
-    };
-
-    GGML_BACKEND_API void    ggml_numa_init(enum ggml_numa_strategy numa); // call once for better performance on NUMA systems
-    GGML_BACKEND_API bool    ggml_is_numa(void); // true if init detected that system has >1 NUMA node
-
     GGML_BACKEND_API struct ggml_tensor * ggml_new_i32(struct ggml_context * ctx, int32_t value);
     GGML_BACKEND_API struct ggml_tensor * ggml_new_f32(struct ggml_context * ctx, float value);
 
@@ -129,6 +116,7 @@ extern "C" {
     GGML_BACKEND_API bool ggml_backend_is_cpu                (ggml_backend_t backend);
     GGML_BACKEND_API void ggml_backend_cpu_set_n_threads     (ggml_backend_t backend_cpu, int n_threads);
     GGML_BACKEND_API void ggml_backend_cpu_set_threadpool    (ggml_backend_t backend_cpu, ggml_threadpool_t threadpool);
+    GGML_BACKEND_API void ggml_backend_cpu_set_numa_node     (ggml_backend_t backend_cpu, int numa_node);
     GGML_BACKEND_API void ggml_backend_cpu_set_abort_callback(ggml_backend_t backend_cpu, ggml_abort_callback abort_callback, void * abort_callback_data);
 
     GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cpu_reg(void);

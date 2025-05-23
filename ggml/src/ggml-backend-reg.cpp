@@ -57,6 +57,10 @@
 #include "ggml-rpc.h"
 #endif
 
+#ifdef GGML_USE_NUMA
+#include "ggml-numa.h"
+#endif
+
 #ifdef GGML_USE_CANN
 #include "ggml-cann.h"
 #endif
@@ -188,7 +192,13 @@ struct ggml_backend_registry {
         register_backend(ggml_backend_kompute_reg());
 #endif
 #ifdef GGML_USE_CPU
-        register_backend(ggml_backend_cpu_reg());
+        auto reg_cpu = ggml_backend_cpu_reg();
+
+#ifdef GGML_USE_NUMA
+        register_backend(ggml_backend_numa_reg(reg_cpu));
+#endif
+
+        register_backend(reg_cpu);
 #endif
     }
 
@@ -578,6 +588,7 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
     ggml_backend_load_best("opencl", silent, dir_path);
     ggml_backend_load_best("musa", silent, dir_path);
     ggml_backend_load_best("cpu", silent, dir_path);
+    ggml_backend_load_best("numa", silent, dir_path);
     // check the environment variable GGML_BACKEND_PATH to load an out-of-tree backend
     const char * backend_path = std::getenv("GGML_BACKEND_PATH");
     if (backend_path) {

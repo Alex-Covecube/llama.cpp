@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+#define GGML_BACKEND_RPC_NAME "NUMA"
+
 #define RPC_PROTO_MAJOR_VERSION    2
 #define RPC_PROTO_MINOR_VERSION    0
 #define RPC_PROTO_PATCH_VERSION    0

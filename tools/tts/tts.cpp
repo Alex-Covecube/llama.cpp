@@ -558,7 +558,6 @@ int main(int argc, char ** argv) {
     // init LLM
 
     llama_backend_init();
-    llama_numa_init(params.numa);
 
     llama_model * model_ttc = NULL; // text-to-codes
     llama_model * model_cts = NULL; // codes-to-speech

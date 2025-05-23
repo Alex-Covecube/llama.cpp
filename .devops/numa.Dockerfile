@@ -27,8 +27,6 @@ RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
         -DGGML_BACKEND_DL=OFF \
         -DGGML_CPU_ALL_VARIANTS=OFF \
         -DLLAMA_BUILD_TESTS=OFF \
-        -DCMAKE_C_FLAGS="-g" \
-        -DCMAKE_CXX_FLAGS="-g" \
         ${OPT_SYCL_F16} && \
     cmake --build build --config Release -j$(nproc)
 
@@ -46,42 +44,12 @@ RUN mkdir -p /app/full \
 FROM intel/oneapi-basekit:$ONEAPI_VERSION AS base
 
 RUN apt-get update \
-    && apt-get install -y libgomp1 curl numactl\
+    && apt-get install -y libgomp1 numactl gdb curl\
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \
     && find /var/cache/apt/archives /var/lib/apt/lists -not -name lock -type f -delete \
     && find /var/cache -type f -delete
-
-### Full
-FROM base AS full
-
-COPY --from=build /app/lib/ /app
-COPY --from=build /app/full /app
-
-WORKDIR /app
-
-RUN apt-get update \
- && apt-get install -y \
-      git \
-      python3 \
-      python3-pip \
- && pip install \
-      --break-system-packages \
-      --ignore-installed \
-      --upgrade pip setuptools wheel \
- && pip install \
-      --break-system-packages \
-      --ignore-installed \
-      -r requirements.txt \
- && apt autoremove -y \
- && apt clean -y \
- && rm -rf /tmp/* /var/tmp/* \
- && find /var/cache/apt/archives /var/lib/apt/lists -not -name lock -type f -delete \
- && find /var/cache -type f -delete
-
-
-ENTRYPOINT ["/app/tools.sh"]
 
 ### Light, CLI only
 FROM base AS light
@@ -106,4 +74,3 @@ WORKDIR /app
 HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
 
 ENTRYPOINT [ "/app/llama-server" ]
-

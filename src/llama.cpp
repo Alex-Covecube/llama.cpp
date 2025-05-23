@@ -54,6 +54,10 @@ bool llama_supports_rpc(void) {
     return ggml_backend_reg_by_name("RPC") != nullptr;
 }
 
+bool llama_supports_numa(void) {
+    return ggml_backend_reg_by_name(GGML_BACKEND_NUMA_NAME) != nullptr;
+}
+
 void llama_backend_init(void) {
     ggml_time_init();
 
@@ -65,13 +69,24 @@ void llama_backend_init(void) {
     }
 }
 
-void llama_numa_init(enum ggml_numa_strategy numa) {
-    if (numa != GGML_NUMA_STRATEGY_DISABLED) {
-        auto * dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-        GGML_ASSERT(dev && "CPU backend is not loaded");
-        auto * reg = ggml_backend_dev_backend_reg(dev);
-        auto * numa_init_fn = (decltype(ggml_numa_init) *) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_numa_init");
-        numa_init_fn(numa);
+void llama_numa_init(enum ggml_numa_strategy numa_strategy) {
+    if (numa_strategy != GGML_NUMA_STRATEGY_DISABLED) {
+        auto reg = ggml_backend_reg_by_name(GGML_BACKEND_NUMA_NAME);
+        if (reg == nullptr) {
+            // Log a warning if NUMA is not supported
+            LLAMA_LOG_WARN("%s: NUMA backend not available, ignoring NUMA strategy\n", __func__);
+            return;
+        }
+
+        auto ggml_backend_numa_enable_fn = (decltype(ggml_backend_numa_enable) *) ggml_backend_reg_get_proc_address(reg, "ggml_backend_numa_enable");
+        if (ggml_backend_numa_enable_fn == nullptr) {
+            throw std::runtime_error("NUMA backend does not support NUMA enable function");
+        }
+
+        if (!ggml_backend_numa_enable_fn(reg, numa_strategy)){
+            LLAMA_LOG_WARN("%s: failed to enable NUMA strategy %d\n", __func__, numa_strategy);
+            return;
+        }
     }
 }
 
@@ -171,6 +186,8 @@ static struct llama_model * llama_model_load_from_file_impl(
         }
     } else {
         std::vector<ggml_backend_dev_t> rpc_servers;
+        std::vector<ggml_backend_dev_t> numa_backends;
+        
         // use all available devices
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);

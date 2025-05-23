@@ -483,39 +483,8 @@ static inline void ggml_thread_cpu_relax(void) {;}
 #endif
 
 //
-// NUMA support
-//
-
-#define GGML_NUMA_MAX_NODES 8
-#define GGML_NUMA_MAX_CPUS 512
-
-struct ggml_numa_node {
-    uint32_t cpus[GGML_NUMA_MAX_CPUS]; // hardware threads on this node
-    uint32_t n_cpus;
-};
-
-struct ggml_numa_nodes {
-    enum ggml_numa_strategy numa_strategy;
-    struct ggml_numa_node nodes[GGML_NUMA_MAX_NODES];
-    uint32_t n_nodes;
-    uint32_t total_cpus; // hardware threads on system
-    uint32_t current_node; // node on which main process is execting
-#if defined(__gnu_linux__)
-    cpu_set_t cpuset; // cpuset from numactl
-#else
-    uint32_t cpuset; // no NUMA support outside of Linux at this time. Use a portable datatype
-#endif
-};
-
-//
 // ggml state
 //
-
-struct ggml_state {
-    struct ggml_numa_nodes numa;
-};
-
-static struct ggml_state g_state = {0};
 
 void ggml_barrier(struct ggml_threadpool * tp) {
     int n_threads = atomic_load_explicit(&tp->n_threads_cur, memory_order_relaxed);
@@ -553,113 +522,6 @@ void ggml_barrier(struct ggml_threadpool * tp) {
     atomic_thread_fence(memory_order_seq_cst);
     #endif
 #endif
-}
-
-#if defined(__gnu_linux__)
-static cpu_set_t ggml_get_numa_affinity(void) {
-    cpu_set_t cpuset;
-    pthread_t thread;
-    thread = pthread_self();
-    CPU_ZERO(&cpuset);
-    pthread_getaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-    return cpuset;
-}
-#else
-static uint32_t ggml_get_numa_affinity(void) {
-    return 0; // no NUMA support
-}
-#endif
-
-void ggml_numa_init(enum ggml_numa_strategy numa_flag) {
-    if (g_state.numa.n_nodes > 0) {
-        fprintf(stderr, "ggml_numa_init: NUMA already initialized\n");
-
-        return;
-    }
-
-#if defined(__gnu_linux__)
-    struct stat st;
-    char path[256];
-    int rv;
-
-    // set numa scheme
-    g_state.numa.numa_strategy = numa_flag;
-
-    GGML_PRINT_DEBUG("numa strategy %u\n",g_state.numa.numa_strategy);
-
-    g_state.numa.cpuset = ggml_get_numa_affinity();
-
-    // enumerate nodes
-    while (g_state.numa.n_nodes < GGML_NUMA_MAX_NODES) {
-        rv = snprintf(path, sizeof(path), "/sys/devices/system/node/node%u", g_state.numa.n_nodes);
-        GGML_ASSERT(rv > 0 && (unsigned)rv < sizeof(path));
-        if (stat(path, &st) != 0) { break; }
-        ++g_state.numa.n_nodes;
-    }
-
-    // enumerate CPUs
-    while (g_state.numa.total_cpus < GGML_NUMA_MAX_CPUS) {
-        rv = snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u", g_state.numa.total_cpus);
-        GGML_ASSERT(rv > 0 && (unsigned)rv < sizeof(path));
-        if (stat(path, &st) != 0) { break; }
-        ++g_state.numa.total_cpus;
-    }
-
-    GGML_PRINT_DEBUG("found %u numa nodes, %u CPUs\n", g_state.numa.n_nodes, g_state.numa.total_cpus);
-
-    // figure out which node we're on
-    uint current_cpu;
-    int getcpu_ret = 0;
-#if __GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ > 33) || defined(__COSMOPOLITAN__)
-    getcpu_ret = getcpu(&current_cpu, &g_state.numa.current_node);
-#else
-    // old glibc doesn't have a wrapper for this call. Fall back on direct syscall
-#   if !defined(SYS_getcpu) && defined(SYS_get_cpu)
-#       define SYS_getcpu SYS_get_cpu // some older glibc versions use this name
-#   endif
-    getcpu_ret = syscall(SYS_getcpu, &current_cpu, &g_state.numa.current_node);
-#endif
-
-    if (g_state.numa.n_nodes < 1 || g_state.numa.total_cpus < 1 || getcpu_ret != 0) {
-        g_state.numa.n_nodes = 0;
-        return;
-    }
-
-    GGML_PRINT_DEBUG("found our process on numa node %u, CPU %u\n", g_state.numa.current_node, current_cpu);
-
-    for (uint32_t n = 0; n < g_state.numa.n_nodes; ++n) {
-        struct ggml_numa_node * node = &g_state.numa.nodes[n];
-        GGML_PRINT_DEBUG("CPUs on node %u:", n);
-        node->n_cpus = 0;
-        for (uint32_t c = 0; c < g_state.numa.total_cpus; ++c) {
-            rv = snprintf(path, sizeof(path), "/sys/devices/system/node/node%u/cpu%u", n, c);
-            GGML_ASSERT(rv > 0 && (unsigned)rv < sizeof(path));
-            if (stat(path, &st) == 0) {
-                node->cpus[node->n_cpus++] = c;
-                GGML_PRINT_DEBUG(" %u", c);
-            }
-        }
-        GGML_PRINT_DEBUG("\n");
-    }
-
-    if (ggml_is_numa()) {
-        FILE *fptr = fopen("/proc/sys/kernel/numa_balancing", "r");
-        if (fptr != NULL) {
-            char buf[42];
-            if (fgets(buf, sizeof(buf), fptr) && strncmp(buf, "0\n", sizeof(buf)) != 0) {
-                GGML_LOG_WARN("/proc/sys/kernel/numa_balancing is enabled, this has been observed to impair performance\n");
-            }
-            fclose(fptr);
-        }
-    }
-#else
-    UNUSED(numa_flag);
-    // TODO
-#endif
-}
-
-bool ggml_is_numa(void) {
-    return g_state.numa.n_nodes > 1;
 }
 
 #if defined(__ARM_ARCH)
@@ -1405,9 +1267,7 @@ UseGgmlGemm2:;
     int64_t nchunk1 = (nr1 + chunk_size - 1) / chunk_size;
 
     // If the chunking is poor for the number of threads on this setup, scrap the whole plan.  Re-chunk it by thread.
-    //   Also, chunking by thread was measured to have perform better on NUMA systems.  See https://github.com/ggml-org/llama.cpp/pull/6915
-    //   In theory, chunking should be just as useful on NUMA and non NUMA systems, but testing disagreed with that.
-    if (nchunk0 * nchunk1 < nth * 4 || ggml_is_numa()) {
+    if (nchunk0 * nchunk1 < nth * 4) {
         // distribute the thread work across the inner or outer loop based on which one is larger
         nchunk0 = nr0 > nr1 ? nth : 1; // parallelize by src0 rows
         nchunk1 = nr0 > nr1 ? 1 : nth; // parallelize by src1 rows
@@ -1665,7 +1525,7 @@ static void ggml_compute_forward_mul_mat_id(
         const bool disable_chunking = true;
 #else
         // disable for NUMA
-        const bool disable_chunking = ggml_is_numa();
+        const bool disable_chunking = false;
 #endif // defined(__aarch64__)
 
         int64_t nchunk0 = (nr0 + chunk_size - 1) / chunk_size;
@@ -2068,80 +1928,6 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     }
 }
 
-// Android's libc implementation "bionic" does not support setting affinity
-#if defined(__gnu_linux__)
-static void set_numa_thread_affinity(int thread_n) {
-    if (!ggml_is_numa()) {
-        return;
-    }
-
-    int node_num;
-    int rv;
-    size_t setsize = CPU_ALLOC_SIZE(g_state.numa.total_cpus);
-
-    switch(g_state.numa.numa_strategy) {
-        case GGML_NUMA_STRATEGY_DISTRIBUTE:
-            // run thread on node_num thread_n / (threads per node)
-            node_num = thread_n % g_state.numa.n_nodes;
-            break;
-        case GGML_NUMA_STRATEGY_ISOLATE:
-            // run thread on current_node
-            node_num = g_state.numa.current_node;
-            break;
-        case GGML_NUMA_STRATEGY_NUMACTL:
-            // use the cpuset that numactl gave us
-            rv = pthread_setaffinity_np(pthread_self(), setsize, &g_state.numa.cpuset);
-            if (rv) {
-                fprintf(stderr, "warning: pthread_setaffinity_np() failed: %s\n",strerror(rv));
-            }
-            return;
-        default:
-            return;
-    }
-
-    struct ggml_numa_node * node = &g_state.numa.nodes[node_num];
-
-    cpu_set_t * cpus = CPU_ALLOC(g_state.numa.total_cpus);
-    CPU_ZERO_S(setsize, cpus);
-    for (size_t i = 0; i < node->n_cpus; ++i) {
-        CPU_SET_S(node->cpus[i], setsize, cpus);
-    }
-
-    rv = pthread_setaffinity_np(pthread_self(), setsize, cpus);
-    if (rv) {
-            fprintf(stderr, "warning: pthread_setaffinity_np() failed: %s\n", strerror(rv));
-    }
-
-    CPU_FREE(cpus);
-}
-
-static void clear_numa_thread_affinity(void) {
-    if (!ggml_is_numa()) {
-        return;
-    }
-
-    size_t setsize = CPU_ALLOC_SIZE(g_state.numa.total_cpus);
-
-    cpu_set_t * cpus = CPU_ALLOC(g_state.numa.total_cpus);
-    CPU_ZERO_S(setsize, cpus);
-    for (unsigned i = 0; i < g_state.numa.total_cpus; ++i) {
-        CPU_SET_S(i, setsize, cpus);
-    }
-
-    int rv = pthread_setaffinity_np(pthread_self(), setsize, cpus);
-    if (rv) {
-        fprintf(stderr, "warning: pthread_setaffinity_np() failed: %s\n", strerror(rv));
-    }
-
-    CPU_FREE(cpus);
-}
-#else
-// TODO: Windows etc.
-// (the linux implementation may also work on BSD, someone should test)
-static void set_numa_thread_affinity(int thread_n) { UNUSED(thread_n);  }
-static void clear_numa_thread_affinity(void) {}
-#endif
-
 static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
     int n_tasks = 0;
 
@@ -2508,10 +2294,10 @@ static bool ggml_thread_apply_priority(int32_t prio) {
         case GGML_SCHED_PRIO_REALTIME: policy = SCHED_FIFO;  p.sched_priority = 90; break;
     }
 
-    if (prio == GGML_SCHED_PRIO_NORMAL) {
-        // Keep inherited policy/priority
-        return true;
-    }
+    // if (prio == GGML_SCHED_PRIO_NORMAL) {
+    //     // Keep inherited policy/priority
+    //     return true;
+    // }
 
     int32_t err = pthread_setschedparam(pthread_self(), policy, &p);
     if (err != 0) {
@@ -2830,8 +2616,6 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
     const struct ggml_cgraph * cgraph = tp->cgraph;
     const struct ggml_cplan  * cplan  = tp->cplan;
 
-    set_numa_thread_affinity(state->ith);
-
     struct ggml_compute_params params = {
         /*.ith       =*/ state->ith,
         /*.nth       =*/ atomic_load_explicit(&tp->n_threads_cur, memory_order_relaxed),
@@ -2990,12 +2774,13 @@ static void ggml_graph_compute_kickoff(struct ggml_threadpool * threadpool, int 
     // We need the full seq-cst fence here because of the polling threads (used in thread_sync)
     atomic_fetch_add_explicit(&threadpool->n_graph, 1, memory_order_seq_cst);
 
+    if (ggml_thread_cpumask_is_valid(threadpool->workers[0].cpumask)) {
+        ggml_thread_apply_affinity(threadpool->workers[0].cpumask);
+    }
+
     if (threadpool->pause) {
        // Update main thread prio and affinity to match the threadpool settings
        ggml_thread_apply_priority(threadpool->prio);
-       if (ggml_thread_cpumask_is_valid(threadpool->workers[0].cpumask)) {
-           ggml_thread_apply_affinity(threadpool->workers[0].cpumask);
-       }
 
        // resume does cond broadcast
        ggml_threadpool_resume_locked(threadpool);
@@ -3125,6 +2910,8 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
         ggml_graph_compute_thread(&threadpool->workers[0]);
     }
 #else
+    
+
     if (n_threads > threadpool->n_threads_max) {
         GGML_LOG_WARN("cplan requested more threads (%d) than available (%d)\n", n_threads, threadpool->n_threads_max);
         n_threads = threadpool->n_threads_max;
@@ -3136,9 +2923,6 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
     // This is a work thread too
     ggml_graph_compute_thread(&threadpool->workers[0]);
 #endif
-
-    // don't leave affinity set on the main thread
-    clear_numa_thread_affinity();
 
     enum ggml_status ret = threadpool->ec;
 

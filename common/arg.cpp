@@ -2263,21 +2263,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.use_mmap = false;
         }
     ).set_env("LLAMA_ARG_NO_MMAP"));
-    add_opt(common_arg(
-        {"--numa"}, "TYPE",
-        "attempt optimizations that help on some NUMA systems\n"
-        "- distribute: spread execution evenly over all nodes\n"
-        "- isolate: only spawn threads on CPUs on the node that execution started on\n"
-        "- numactl: use the CPU map provided by numactl\n"
-        "if run without this previously, it is recommended to drop the system page cache before using this\n"
-        "see https://github.com/ggml-org/llama.cpp/issues/1437",
-        [](common_params & params, const std::string & value) {
-            /**/ if (value == "distribute" || value == "") { params.numa = GGML_NUMA_STRATEGY_DISTRIBUTE; }
-            else if (value == "isolate") { params.numa = GGML_NUMA_STRATEGY_ISOLATE; }
-            else if (value == "numactl") { params.numa = GGML_NUMA_STRATEGY_NUMACTL; }
-            else { throw std::invalid_argument("invalid value"); }
-        }
-    ).set_env("LLAMA_ARG_NUMA"));
+    if (llama_supports_numa()) {
+        add_opt(common_arg(
+            {"--numa"}, "TYPE",
+            "NUMA-aware CPU and memory usage\n"
+            "- smt: use simultaneous multithreading (SMT) cores\n"
+            "- physical: use physical cores only (default)",
+            [](common_params & params, const std::string & value) {
+                ggml_numa_strategy numa_strategy = GGML_NUMA_STRATEGY_DISABLED;
+
+                /**/ if (value == "physical" || value == "") { numa_strategy = GGML_NUMA_STRATEGY_PHYSICAL; }
+                else if (value == "smt") { numa_strategy = GGML_NUMA_STRATEGY_SMT; }
+                else { throw std::invalid_argument("invalid value"); }
+
+                if (numa_strategy == GGML_NUMA_STRATEGY_DISABLED) {
+                    return;
+                }
+
+                params.numa = numa_strategy;
+                
+                llama_numa_init(numa_strategy);
+
+                GGML_UNUSED(params);
+            }
+        ).set_env("LLAMA_ARG_NUMA"));
+    }
     add_opt(common_arg(
         {"-dev", "--device"}, "<dev1,dev2,..>",
         "comma-separated list of devices to use for offloading (none = don't offload)\n"

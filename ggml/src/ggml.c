@@ -35,6 +35,7 @@
 #include <signal.h>
 #if defined(__gnu_linux__)
 #include <syscall.h>
+#include <numaif.h>
 #endif
 
 #if defined(__APPLE__)
@@ -270,19 +271,59 @@ void ggml_log_callback_default(enum ggml_log_level level, const char * text, voi
 //#define GGML_SOFT_MAX_ACCELERATE
 #endif
 
+void * ggml_aligned_malloc_numa(size_t size, int numa_node) {
+#if defined(__gnu_linux__)
+    if (size == 0) {
+        GGML_LOG_ERROR("Behavior may be unexpected when allocating 0 bytes for ggml_aligned_malloc_numa!\n");
+        return NULL;
+    }
+
+    if (numa_node < 0) {
+        GGML_LOG_ERROR("%s: invalid NUMA node %d\n", __func__, numa_node);
+        return NULL;
+    }
+
+    size_t pagesize = sysconf(_SC_PAGESIZE);
+    size_t alloc_size = ((size + pagesize - 1) / pagesize) * pagesize;
+
+    void * buffer = ggml_aligned_malloc(alloc_size);
+
+    if (numa_node >= 64) {
+        GGML_LOG_ERROR("%s: invalid NUMA node %d\n", __func__, numa_node);
+        ggml_aligned_free(buffer, alloc_size);
+        return NULL;
+    }
+
+    unsigned long nodemask = 1UL << numa_node;
+
+    if (mbind(buffer, alloc_size, MPOL_BIND, &nodemask, sizeof(nodemask)*8, MPOL_MF_MOVE) != 0) {
+        GGML_LOG_ERROR("%s: failed to bind memory to NUMA node %d (error: %d)\n", __func__, numa_node, errno);
+        ggml_aligned_free(buffer, alloc_size);
+        return NULL;
+    }
+
+    GGML_LOG_INFO("%s: allocated %zu bytes on NUMA node %d\n", __func__, alloc_size, numa_node);
+    
+    return buffer;
+#else
+    return ggml_aligned_malloc(size);
+#endif
+}
 
 void * ggml_aligned_malloc(size_t size) {
-#if defined(__s390x__)
-    const int alignment = 256;
+#if defined(__gnu_linux__)
+    int alignment = sysconf(_SC_PAGESIZE);
+#elif defined(__s390x__)
+    int alignment = 256;
 #else
-    const int alignment = 64;
+    int alignment = 64;
 #endif
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
     return _aligned_malloc(size, alignment);
 #else
     if (size == 0) {
-        GGML_LOG_WARN("Behavior may be unexpected when allocating 0 bytes for ggml_aligned_malloc!\n");
+        GGML_LOG_ERROR("Behavior may be unexpected when allocating 0 bytes for ggml_aligned_malloc!\n");
         return NULL;
     }
     void * aligned_memory = NULL;

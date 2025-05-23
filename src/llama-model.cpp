@@ -264,6 +264,11 @@ static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hpara
         ggml_backend_buffer_type_t cur_buft = cur.second;
         if (weight_buft_supported(hparams, tensor, op, cur_buft, cur_dev)) {
             return cur_buft;
+        } else {
+            LLAMA_LOG_DEBUG("%s: tensor %s (%zu MiB %s) not supported by %s\n",
+                __func__,  // NOLINT
+                tensor->name, ggml_nbytes(tensor) / 1024 / 1024, ggml_type_name(tensor->type),
+                ggml_backend_buft_name(cur_buft));
         }
     }
 
@@ -1505,6 +1510,8 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             size_t free;
             ggml_backend_dev_memory(dev, &free, &total);
             splits[i] = free;
+            
+            LLAMA_LOG_DEBUG("%s: device %s: free = %.2f GB, total = %.2f GB\n", __func__, ggml_backend_dev_name(dev), free / 1e9, total / 1e9);
         }
     } else {
         std::copy(tensor_split, tensor_split + n_devices(), splits.begin());
@@ -1520,21 +1527,49 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         splits[i] /= split_sum;
     }
 
+    // Log split points
+    if (n_devices() > 0) {
+        LLAMA_LOG_DEBUG("%s: tensor split points (using_default=%s):\n", __func__, all_zero ? "true" : "false");
+        for (size_t i = 0; i < n_devices(); ++i) {
+            LLAMA_LOG_DEBUG(" - %s: %.2f\n", ggml_backend_dev_name(devices[i]), splits[i]);
+        }
+    }
+
+    // Get the CPU backend device
     ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (cpu_dev == nullptr) {
         throw std::runtime_error(format("%s: no CPU backend found", __func__));
     }
-    const int i_gpu_start = std::max((int) hparams.n_layer - n_gpu_layers, (int) 0);
+
+    // Calculate the starting index for GPU layers
+    const int i_gpu_start = std::max((int) hparams.n_layer - n_gpu_layers, 0);
+
+    // Determine the actual number of layers to offload to GPU
     const int act_gpu_layers = devices.empty() ? 0 : std::min(n_gpu_layers, (int)n_layer + 1);
+
+    // Lambda to assign a device and buffer list to each layer
     auto get_layer_buft_list = [&](int il) -> llama_model::impl::layer_dev {
+        // Check if this layer is a SWA layer
         const bool is_swa = il < (int) hparams.n_layer && hparams.is_swa(il);
+
+        // If the layer is before the GPU start index or after the last GPU layer, assign to CPU
         if (il < i_gpu_start || (il - i_gpu_start) >= act_gpu_layers) {
-            LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(cpu_dev), is_swa);
+            LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to (CPU) device %s, is_swa = %d\n",
+                            il, ggml_backend_dev_name(cpu_dev), is_swa);
             return {cpu_dev, &pimpl->cpu_buft_list};
         }
-        const int layer_gpu = std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin();
+
+        // Otherwise, assign to the appropriate GPU device based on the splits
+        // The splits are normalized to [0, 1], and ordered from 0 to 1
+        // The number of splits is equal to the number of devices
+        const int layer_gpu = std::upper_bound(
+            splits.begin(), splits.begin() + n_devices(),
+            float(il - i_gpu_start) / act_gpu_layers
+        ) - splits.begin();
+
         auto * dev = devices.at(layer_gpu);
-        LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(dev), is_swa);
+        LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to (GPU) device %s, is_swa = %d\n",
+                        il, ggml_backend_dev_name(dev), is_swa);
         return {dev, &pimpl->gpu_buft_list.at(dev)};
     };
 
@@ -1692,7 +1727,8 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     std::regex pattern(overrides->pattern);
                     if (std::regex_search(tensor_name, pattern)) {
                         buft = overrides->buft;
-                        LLAMA_LOG_DEBUG("tensor %s (%zu MiB %s) buffer type overridden to %s\n",
+                        LLAMA_LOG_DEBUG("%s: tensor %s (%zu MiB %s) buffer type overridden to %s\n",
+                                __func__,
                                 tensor_name.c_str(),
                                 ggml_nbytes(t_meta) / 1024 / 1024, ggml_type_name(t_meta->type),
                                 ggml_backend_buft_name(buft));
@@ -1703,6 +1739,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
 
             if (!buft) {
                 buft = select_weight_buft(hparams, t_meta, op, *buft_list);
+
                 if (!buft) {
                     throw std::runtime_error(format("failed to find a compatible buffer type for tensor %s", tn.str().c_str()));
                 }
@@ -1725,6 +1762,29 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     first_moved_from_buft = buft_list->front().second;
                     first_moved_to_buft   = buft;
                 }
+            }
+
+            // Log the selected buft
+            auto layer_type_str = info.layer == LLM_TENSOR_LAYER_INPUT ? "input" :
+                info.layer == LLM_TENSOR_LAYER_OUTPUT ? "output" :
+                info.layer == LLM_TENSOR_LAYER_REPEATING ? "repeating" : 
+                "unknown";
+
+            if (buft != buft_list->front().second) {
+                LLAMA_LOG_DEBUG("%s: tensor %s (%zu MiB %s) moved from %s to %s (layer: %s)\n",
+                        __func__,
+                        tn.str().c_str(),
+                        ggml_nbytes(t_meta) / 1024 / 1024, ggml_type_name(t_meta->type),
+                        ggml_backend_buft_name(buft_list->front().second),
+                        ggml_backend_buft_name(buft),
+                        layer_type_str);
+            } else {
+                LLAMA_LOG_DEBUG("%s: tensor %s (%zu MiB %s) assigned to %s (layer: %s)\n",
+                        __func__,
+                        tn.str().c_str(),
+                        ggml_nbytes(t_meta) / 1024 / 1024, ggml_type_name(t_meta->type),
+                        ggml_backend_buft_name(buft),
+                        layer_type_str);
             }
 
             ggml_context * ctx = ctx_for_buft(buft);
