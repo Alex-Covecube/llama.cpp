@@ -1,10 +1,16 @@
 ## Covecube Branch
 
-This is a custom branch to apply a number of changes / fixes to upstream for CPU inferencing.
+This is a custom *EXPERIMENTAL* branch to apply a number of changes / fixes to upstream for CPU inferencing. It is not production ready.
 
 * Fixed threadpool initialization in llama-server, allowing for proper use of the `--cpu-range` and `--cpu-mask` options.
 * Added cascade lake support and select optimizations.
-* Build against: `/.devops/intel.Dockerfile`.
+* Implemented a NUMA-aware backend that functions on top of the existing (modified) CPU backend. Each NUMA node is presented as a separate GPU. The NUMA backend supports async and events.
+
+NOTE: llama.cpp currently **doesn't support tensor parallelism**. Therefore, just like with GPUs, NUMA nodes cannot run inferencing in parallel. We need tensor parallelism support in llama.cpp to fully unlock the full potential of NUMA-aware CPU inferencing.
+
+### Build / Run
+* Build against: `/.devops/intel.Dockerfile`
+* Run on the same hardware, as optimizations are applied at build time (native build).
 
 ---
 
