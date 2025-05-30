@@ -1,6 +1,6 @@
 ## Covecube Branch
 
-This is a custom branch to apply a number of changes / fixes to upstream for CPU inferencing.
+This is a custom *EXPERIMENTAL* branch to apply a number of changes / fixes to upstream for CPU inferencing. It is not production ready.
 
 * Fixed threadpool initialization in llama-server, allowing for proper use of the `--cpu-range` and `--cpu-mask` options.
 * Added cascade lake support and select optimizations.
