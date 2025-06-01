@@ -26,7 +26,7 @@
 #pragma region Async structures
 
 #define NUMA_ASYNC 1
-#define NUMA_EVENTS (NUMA_ASYNC && 1)
+#define NUMA_EVENTS (NUMA_ASYNC && 0)
 
 #pragma region Manual Reset Event
 
@@ -164,8 +164,6 @@ static void numa_worker_loop(ggml_backend_device * numa_device) {
     GGML_LOG_DEBUG("%s: [NUMA %d] started worker\n", __func__, ctx->numa_node);
 
     while (true) {
-        std::unique_ptr<numa_task> task_ptr;
-
         GGML_LOG_DEBUG("%s: [NUMA %d] waiting for task...\n", __func__, ctx->numa_node);
         while (true) {
             numa_task * task_ptr;
@@ -179,7 +177,7 @@ static void numa_worker_loop(ggml_backend_device * numa_device) {
                 ctx->async.queue.pop();
             }
 
-            auto task = *task_ptr;
+            auto & task = *task_ptr;
 
             GGML_LOG_DEBUG("%s: [NUMA %d] got task %d\n", __func__, ctx->numa_node, (int)task.type);
 
