@@ -3897,19 +3897,18 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
         __m256i qy1 = _mm256_loadu_si256((const void *)y[ib].qs);
         __m256i qy2 = _mm256_loadu_si256((const void *)y[ib + 1].qs);
 
-        // Get absolute values of x vectors
-        __m256i ax1 = _mm256_sign_epi8(qx1, qx1);
-        __m256i ax2 = _mm256_sign_epi8(qx2, qx2);
-
         // Reverse the sign of y vectors based on x
         __m256i sy1 = _mm256_sign_epi8(qy1, qx1);
         __m256i sy2 = _mm256_sign_epi8(qy2, qx2);
 
-        __m512i qx = _mm512_castsi256_si512(ax1);   // unsigned
+        __m512i qx = _mm512_castsi256_si512(qx1);   // unsigned (to be)
         __m512i qy = _mm512_castsi256_si512(sy1);   // signed
 
-        qx = _mm512_inserti64x4(qx, ax2, 1);
+        qx = _mm512_inserti64x4(qx, qx2, 1);
         qy = _mm512_inserti64x4(qy, sy2, 1);
+
+        // compute the absolute values of x vectors
+        qx = _mm512_abs_epi8(qx);
 
         // fused int8 dot → int32 accumulate (VNNI)
         __m512i dot32 = _mm512_dpbusds_epi32(_mm512_setzero_si512(), qx, qy);   // unsigned*signed
