@@ -9548,11 +9548,7 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
 #elif defined(__AVX512F__)
     const __m512i m4   = _mm512_set1_epi8(0xF);
-    const __m512i m2_512   = _mm512_set1_epi8(3);
-#if 0
-    const __m256i m2_256 = _mm256_set1_epi8(3);
-    const __m512i sh4 = _mm512_set1_epi16(0x0040);
-#endif
+    const __m512i m2_512   = _mm512_set1_epi8(0x3);
     const __m512i m32s = _mm512_set1_epi8(32);
 
     __m512 acc = _mm512_setzero_ps();
@@ -9584,31 +9580,6 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
             const __m512i q4bits1 = _mm512_loadu_si512((const void*)q4); q4 += 64;
             const __m512i q4bits2 = _mm512_loadu_si512((const void*)q4); q4 += 64;
-
-#if 0
-            const __m256i q4bitsH1 = _mm256_loadu_si256((const __m256i*)qh); qh += 32;
-            const __m256i q4bitsH2 = _mm256_loadu_si256((const __m256i*)qh); qh += 32;
-
-            const __m256i q4h_0a = _mm256_slli_epi16(_mm256_and_si256(q4bitsH1, m2_256), 4);
-            const __m256i q4h_1a = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bitsH1, 2), m2_256), 4);
-            const __m256i q4h_2a = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bitsH1, 4), m2_256), 4);
-            const __m256i q4h_3a = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bitsH1, 6), m2_256), 4);
-
-            const __m256i q4h_0b = _mm256_slli_epi16(_mm256_and_si256(q4bitsH2, m2_256), 4);
-            const __m256i q4h_1b = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bitsH2, 2), m2_256), 4);
-            const __m256i q4h_2b = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bitsH2, 4), m2_256), 4);
-            const __m256i q4h_3b = _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bitsH2, 6), m2_256), 4);
-
-            __m512i q4h_0 = _mm512_castsi256_si512(q4h_0a);
-            __m512i q4h_1 = _mm512_castsi256_si512(q4h_2a);
-            __m512i q4h_2 = _mm512_castsi256_si512(q4h_0b);
-            __m512i q4h_3 = _mm512_castsi256_si512(q4h_2b);
-
-            q4h_0 = _mm512_inserti32x8(q4h_0, q4h_1a, 1);
-            q4h_1 = _mm512_inserti32x8(q4h_1, q4h_3a, 1);
-            q4h_2 = _mm512_inserti32x8(q4h_2, q4h_1b, 1);
-            q4h_3 = _mm512_inserti32x8(q4h_3, q4h_3b, 1);
-#elif 1
             const __m512i q4bitsH = _mm512_loadu_si512((const void*)qh); qh += 64;
 
             const __m512i q4h_s0 = _mm512_slli_epi16(_mm512_and_si512(q4bitsH , m2_512), 4);
@@ -9630,7 +9601,6 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
             __m512i q4h_1 = _mm512_inserti32x8(_mm512_castsi256_si512(lo_s4), lo_s6, 1); // {bits4, bits6} of H1
             __m512i q4h_2 = _mm512_inserti32x8(_mm512_castsi256_si512(hi_s0), hi_s2, 1); // {bits0, bits2} of H2
             __m512i q4h_3 = _mm512_inserti32x8(_mm512_castsi256_si512(hi_s4), hi_s6, 1); // {bits4, bits6} of H2
-#endif
 
             const __m512i q4_0 = _mm512_or_si512(_mm512_and_si512(q4bits1, m4), q4h_0);
             const __m512i q4_1 = _mm512_or_si512(_mm512_and_si512(_mm512_srli_epi16(q4bits1 , 4), m4), q4h_1);
@@ -9677,6 +9647,12 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
             sc2_512 = _mm512_inserti32x8(sc2_512, sc5_256, 1);
             sc3_512 = _mm512_inserti32x8(sc3_512, sc7_256, 1);
 
+#if defined(__AVX512VNNI__)
+            sumi = _mm512_dpwssds_epi32(sumi, p16_0, sc0_512); // (16 x i16) + (16 x i16) → 8 x i32
+            sumi = _mm512_dpwssds_epi32(sumi, p16_1, sc1_512);
+            sumi = _mm512_dpwssds_epi32(sumi, p16_2, sc2_512);
+            sumi = _mm512_dpwssds_epi32(sumi, p16_3, sc3_512);
+#else
             p16_0 = _mm512_madd_epi16(sc0_512, p16_0);
             p16_1 = _mm512_madd_epi16(sc1_512, p16_1);
             p16_2 = _mm512_madd_epi16(sc2_512, p16_2);
@@ -9684,6 +9660,8 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
             sumi = _mm512_add_epi32(sumi, _mm512_add_epi32(p16_0, p16_1));
             sumi = _mm512_add_epi32(sumi, _mm512_add_epi32(p16_2, p16_3));
+#endif
+            
         }
         
         acc = _mm512_fmadd_ps(_mm512_set1_ps(d), _mm512_cvtepi32_ps(sumi), acc);
