@@ -26,8 +26,8 @@ RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
         -DGGML_BACKEND_DL=OFF \
         -DGGML_CPU_ALL_VARIANTS=OFF \
         -DLLAMA_BUILD_TESTS=OFF \
-        -DCMAKE_C_FLAGS="-g" \
-        -DCMAKE_CXX_FLAGS="-g" \
+        -DCMAKE_C_FLAGS="-g -xHost" \
+        -DCMAKE_CXX_FLAGS="-g -xHost" \
         ${OPT_SYCL_F16} && \
     cmake --build build --config Release -j$(nproc)
 
