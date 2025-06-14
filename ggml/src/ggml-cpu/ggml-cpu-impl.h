@@ -515,6 +515,18 @@ void ggml_barrier(struct ggml_threadpool * tp);
 // - all native kernels need to be implemented in both x86 and arm files
 // - on iOS, tvOS, and visionOS, if cmake cannot determine the target architecture, all `_generic` names are replaced by defines
 # define GGML_WEAK_ALIAS(name, alias)
+#elif defined(__INTEL_LLVM_COMPILER)
+/*--------------------------------------------------------------------*
+    Intel LLVM (icx/icpx) — provide weak aliases only on ELF targets.
+ *--------------------------------------------------------------------*/
+#  if defined(__ELF__)
+#    define GGML_WEAK_ALIAS(name, alias)                                   \
+        extern __typeof__(alias) name __attribute__((weak));               \
+        __asm__(".weak " #name "\n.set " #name ", " #alias);
+#  else
+       /* Non-ELF target: just compile without aliases.                    */
+#    define GGML_WEAK_ALIAS(name, alias)
+#  endif
 #elif defined(__GNUC__)
 // GCC/Clang on *nix
 # define GGML_WEAK_ALIAS(name, alias) GGML_DO_PRAGMA(weak name = alias) // NOLINT
