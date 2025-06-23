@@ -264,6 +264,7 @@ int main(int argc, char ** argv) {
 
             if (!params.system_prompt.empty() || !params.prompt.empty()) {
                 common_chat_templates_inputs inputs;
+                inputs.use_jinja = g_params->use_jinja;
                 inputs.messages = chat_msgs;
                 inputs.add_generation_prompt = !params.prompt.empty();
 
