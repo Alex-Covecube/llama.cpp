@@ -149,4 +149,8 @@ poetry.toml
 /run-chat.sh
 .ccache/
 
+# Code Workspace
+*.code-workspace
+
+
 /.devops/intel-all.Dockerfile
