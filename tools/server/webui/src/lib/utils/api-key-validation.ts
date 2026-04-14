@@ -1,3 +1,4 @@
+import { base } from '$app/paths';
 import { error } from '@sveltejs/kit';
 import { browser } from '$app/environment';
 import { config } from '$lib/stores/settings.svelte';
@@ -22,16 +23,15 @@ export async function validateApiKey(fetch: typeof globalThis.fetch): Promise<vo
 			headers.Authorization = `Bearer ${apiKey}`;
 		}
 
-		const response = await fetch('/props', { headers });
+		const response = await fetch(`${base}/props`, { headers });
 
 		if (!response.ok) {
 			if (response.status === 401 || response.status === 403) {
 				throw error(401, 'Access denied');
-			} else if (response.status >= 500) {
-				throw error(response.status, 'Server error - check if llama.cpp server is running');
-			} else {
-				throw error(response.status, `Server responded with status ${response.status}`);
 			}
+
+			console.warn(`Server responded with status ${response.status} during API key validation`);
+			return;
 		}
 	} catch (err) {
 		// If it's already a SvelteKit error, re-throw it
@@ -40,6 +40,6 @@ export async function validateApiKey(fetch: typeof globalThis.fetch): Promise<vo
 		}
 
 		// Network or other errors
-		throw error(503, 'Cannot connect to server - check if llama.cpp server is running');
+		console.warn('Cannot connect to server for API key validation:', err);
 	}
 }

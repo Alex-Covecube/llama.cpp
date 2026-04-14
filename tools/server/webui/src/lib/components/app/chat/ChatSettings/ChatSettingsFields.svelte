@@ -1,11 +1,17 @@
 <script lang="ts">
+	import { RotateCcw, FlaskConical } from '@lucide/svelte';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Input } from '$lib/components/ui/input';
 	import Label from '$lib/components/ui/label/label.svelte';
 	import * as Select from '$lib/components/ui/select';
 	import { Textarea } from '$lib/components/ui/textarea';
-	import { SETTING_CONFIG_DEFAULT, SETTING_CONFIG_INFO } from '$lib/constants/settings-config';
-	import { supportsVision } from '$lib/stores/server.svelte';
+	import { SETTING_CONFIG_INFO, SETTINGS_KEYS } from '$lib/constants';
+	import { SettingsFieldType } from '$lib/enums/settings';
+	import { settingsStore } from '$lib/stores/settings.svelte';
+	import { serverStore } from '$lib/stores/server.svelte';
+	import { modelsStore, selectedModelName } from '$lib/stores/models.svelte';
+	import { normalizeFloatingPoint } from '$lib/utils/precision';
+	import { ChatSettingsParameterSourceIndicator } from '$lib/components/app';
 	import type { Component } from 'svelte';
 
 	interface Props {
@@ -13,79 +19,189 @@
 		localConfig: SettingsConfigType;
 		onConfigChange: (key: string, value: string | boolean) => void;
 		onThemeChange?: (theme: string) => void;
-		isMobile?: boolean;
 	}
 
-	let { fields, localConfig, onConfigChange, onThemeChange, isMobile = false }: Props = $props();
+	let { fields, localConfig, onConfigChange, onThemeChange }: Props = $props();
+
+	// server sampling defaults for placeholders
+	let sp = $derived.by(() => {
+		if (serverStore.isRouterMode) {
+			const m = selectedModelName();
+			if (m) {
+				const p = modelsStore.getModelProps(m);
+				return (p?.default_generation_settings?.params ?? {}) as Record<string, unknown>;
+			}
+		}
+		return (serverStore.defaultParams ?? {}) as Record<string, unknown>;
+	});
 </script>
 
 {#each fields as field (field.key)}
 	<div class="space-y-2">
-		{#if field.type === 'input'}
-			<Label for={field.key} class="block text-sm font-medium">
-				{field.label}
-			</Label>
+		{#if field.type === SettingsFieldType.INPUT}
+			{@const currentValue = String(localConfig[field.key] ?? '')}
+			{@const serverDefault = sp[field.key]}
+			{@const isCustomRealTime = (() => {
+				if (serverDefault == null) return false;
+				if (currentValue === '') return false;
 
-			<Input
-				id={field.key}
-				value={String(localConfig[field.key] || '')}
-				onchange={(e) => onConfigChange(field.key, e.currentTarget.value)}
-				placeholder={`Default: ${SETTING_CONFIG_DEFAULT[field.key] || 'none'}`}
-				class={isMobile ? 'w-full' : 'max-w-md'}
-			/>
+				const numericInput = parseFloat(currentValue);
+				const normalizedInput = !isNaN(numericInput)
+					? Math.round(numericInput * 1000000) / 1000000
+					: currentValue;
+				const normalizedDefault =
+					typeof serverDefault === 'number'
+						? Math.round(serverDefault * 1000000) / 1000000
+						: serverDefault;
+
+				return normalizedInput !== normalizedDefault;
+			})()}
+
+			<div class="flex items-center gap-2">
+				<Label for={field.key} class="flex items-center gap-1.5 text-sm font-medium">
+					{field.label}
+
+					{#if field.isExperimental}
+						<FlaskConical class="h-3.5 w-3.5 text-muted-foreground" />
+					{/if}
+				</Label>
+				{#if isCustomRealTime}
+					<ChatSettingsParameterSourceIndicator />
+				{/if}
+			</div>
+
+			<div class="relative w-full md:max-w-md">
+				<Input
+					id={field.key}
+					value={currentValue}
+					oninput={(e) => {
+						// Update local config immediately for real-time badge feedback
+						onConfigChange(field.key, e.currentTarget.value);
+					}}
+					placeholder={sp[field.key] != null
+						? `Default: ${normalizeFloatingPoint(sp[field.key])}`
+						: ''}
+					class="w-full {isCustomRealTime ? 'pr-8' : ''}"
+				/>
+				{#if isCustomRealTime}
+					<button
+						type="button"
+						onclick={() => {
+							settingsStore.resetParameterToServerDefault(field.key);
+							onConfigChange(field.key, '');
+						}}
+						class="absolute top-1/2 right-2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded transition-colors hover:bg-muted"
+						aria-label="Reset to default"
+						title="Reset to default"
+					>
+						<RotateCcw class="h-3 w-3" />
+					</button>
+				{/if}
+			</div>
 			{#if field.help || SETTING_CONFIG_INFO[field.key]}
 				<p class="mt-1 text-xs text-muted-foreground">
-					{field.help || SETTING_CONFIG_INFO[field.key]}
+					{@html field.help || SETTING_CONFIG_INFO[field.key]}
 				</p>
 			{/if}
-		{:else if field.type === 'textarea'}
-			<Label for={field.key} class="block text-sm font-medium">
+		{:else if field.type === SettingsFieldType.TEXTAREA}
+			<Label for={field.key} class="block flex items-center gap-1.5 text-sm font-medium">
 				{field.label}
+
+				{#if field.isExperimental}
+					<FlaskConical class="h-3.5 w-3.5 text-muted-foreground" />
+				{/if}
 			</Label>
 
 			<Textarea
 				id={field.key}
-				value={String(localConfig[field.key] || '')}
+				value={String(localConfig[field.key] ?? '')}
 				onchange={(e) => onConfigChange(field.key, e.currentTarget.value)}
-				placeholder={`Default: ${SETTING_CONFIG_DEFAULT[field.key] || 'none'}`}
-				class={isMobile ? 'min-h-[100px] w-full' : 'min-h-[100px] max-w-2xl'}
+				placeholder=""
+				class="min-h-[10rem] w-full md:max-w-2xl"
 			/>
+
 			{#if field.help || SETTING_CONFIG_INFO[field.key]}
 				<p class="mt-1 text-xs text-muted-foreground">
 					{field.help || SETTING_CONFIG_INFO[field.key]}
 				</p>
 			{/if}
-		{:else if field.type === 'select'}
+
+			{#if field.key === SETTINGS_KEYS.SYSTEM_MESSAGE}
+				<div class="mt-3 flex items-center gap-2">
+					<Checkbox
+						id="showSystemMessage"
+						checked={Boolean(localConfig.showSystemMessage ?? true)}
+						onCheckedChange={(checked) => onConfigChange('showSystemMessage', Boolean(checked))}
+					/>
+
+					<Label for="showSystemMessage" class="cursor-pointer text-sm font-normal">
+						Show system message in conversations
+					</Label>
+				</div>
+			{/if}
+		{:else if field.type === SettingsFieldType.SELECT}
 			{@const selectedOption = field.options?.find(
 				(opt: { value: string; label: string; icon?: Component }) =>
 					opt.value === localConfig[field.key]
 			)}
+			{@const currentValue = localConfig[field.key]}
+			{@const serverDefault = sp[field.key]}
+			{@const isCustomRealTime = (() => {
+				if (serverDefault == null) return false;
+				if (currentValue === '' || currentValue === undefined) return false;
+				return currentValue !== serverDefault;
+			})()}
 
-			<Label for={field.key} class="block text-sm font-medium">
-				{field.label}
-			</Label>
+			<div class="flex items-center gap-2">
+				<Label for={field.key} class="flex items-center gap-1.5 text-sm font-medium">
+					{field.label}
+
+					{#if field.isExperimental}
+						<FlaskConical class="h-3.5 w-3.5 text-muted-foreground" />
+					{/if}
+				</Label>
+				{#if isCustomRealTime}
+					<ChatSettingsParameterSourceIndicator />
+				{/if}
+			</div>
 
 			<Select.Root
 				type="single"
-				value={localConfig[field.key]}
+				value={currentValue}
 				onValueChange={(value) => {
-					if (field.key === 'theme' && value && onThemeChange) {
+					if (field.key === SETTINGS_KEYS.THEME && value && onThemeChange) {
 						onThemeChange(value);
 					} else {
 						onConfigChange(field.key, value);
 					}
 				}}
 			>
-				<Select.Trigger class={isMobile ? 'w-full' : 'max-w-md'}>
-					<div class="flex items-center gap-2">
-						{#if selectedOption?.icon}
-							{@const IconComponent = selectedOption.icon}
-							<IconComponent class="h-4 w-4" />
-						{/if}
+				<div class="relative w-full md:w-auto md:max-w-md">
+					<Select.Trigger class="w-full">
+						<div class="flex items-center gap-2">
+							{#if selectedOption?.icon}
+								{@const IconComponent = selectedOption.icon}
+								<IconComponent class="h-4 w-4" />
+							{/if}
 
-						{selectedOption?.label || `Select ${field.label.toLowerCase()}`}
-					</div>
-				</Select.Trigger>
+							{selectedOption?.label || `Select ${field.label.toLowerCase()}`}
+						</div>
+					</Select.Trigger>
+					{#if isCustomRealTime}
+						<button
+							type="button"
+							onclick={() => {
+								settingsStore.resetParameterToServerDefault(field.key);
+								onConfigChange(field.key, '');
+							}}
+							class="absolute top-1/2 right-8 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded transition-colors hover:bg-muted"
+							aria-label="Reset to default"
+							title="Reset to default"
+						>
+							<RotateCcw class="h-3 w-3" />
+						</button>
+					{/if}
+				</div>
 				<Select.Content>
 					{#if field.options}
 						{#each field.options as option (option.value)}
@@ -107,13 +223,11 @@
 					{field.help || SETTING_CONFIG_INFO[field.key]}
 				</p>
 			{/if}
-		{:else if field.type === 'checkbox'}
-			{@const isDisabled = field.key === 'pdfAsImage' && !supportsVision()}
+		{:else if field.type === SettingsFieldType.CHECKBOX}
 			<div class="flex items-start space-x-3">
 				<Checkbox
 					id={field.key}
 					checked={Boolean(localConfig[field.key])}
-					disabled={isDisabled}
 					onCheckedChange={(checked) => onConfigChange(field.key, checked)}
 					class="mt-1"
 				/>
@@ -121,21 +235,18 @@
 				<div class="space-y-1">
 					<label
 						for={field.key}
-						class="cursor-pointer text-sm leading-none font-medium {isDisabled
-							? 'text-muted-foreground'
-							: ''}"
+						class="flex cursor-pointer items-center gap-1.5 pt-1 pb-0.5 text-sm leading-none font-medium"
 					>
 						{field.label}
+
+						{#if field.isExperimental}
+							<FlaskConical class="h-3.5 w-3.5 text-muted-foreground" />
+						{/if}
 					</label>
 
 					{#if field.help || SETTING_CONFIG_INFO[field.key]}
 						<p class="text-xs text-muted-foreground">
 							{field.help || SETTING_CONFIG_INFO[field.key]}
-						</p>
-					{:else if field.key === 'pdfAsImage' && !supportsVision()}
-						<p class="text-xs text-muted-foreground">
-							PDF-to-image processing requires a vision-capable model. PDFs will be processed as
-							text.
 						</p>
 					{/if}
 				</div>

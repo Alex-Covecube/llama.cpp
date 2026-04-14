@@ -1,184 +1,158 @@
-import { ChatService } from '$lib/services/chat';
-import { config } from '$lib/stores/settings.svelte';
+import { PropsService } from '$lib/services/props.service';
+import { ServerRole } from '$lib/enums';
 
 /**
- * ServerStore - Server state management and capability detection
+ * serverStore - Server connection state, configuration, and role detection
  *
- * This store manages communication with the llama.cpp server to retrieve and maintain
- * server properties, model information, and capability detection. It provides reactive
- * state for server connectivity, model capabilities, and endpoint availability.
+ * This store manages the server connection state and properties fetched from `/props`.
+ * It provides reactive state for server configuration and role detection.
  *
  * **Architecture & Relationships:**
- * - **ServerStore** (this class): Server state and capability management
- *   - Fetches and caches server properties from `/props` endpoint
- *   - Detects model capabilities (vision, audio support)
- *   - Tests endpoint availability (slots endpoint)
- *   - Provides reactive server state for UI components
- *
- * - **ChatService**: Uses server properties for request validation
- * - **SlotsService**: Depends on slots endpoint availability detection
- * - **UI Components**: Subscribe to server state for capability-based rendering
+ * - **PropsService**: Stateless service for fetching `/props` data
+ * - **serverStore** (this class): Reactive store for server state
+ * - **modelsStore**: Independent store for model management (uses PropsService directly)
  *
  * **Key Features:**
- * - **Server Properties**: Model path, context size, build information
- * - **Capability Detection**: Vision and audio modality support
- * - **Endpoint Testing**: Slots endpoint availability checking
- * - **Error Handling**: User-friendly error messages for connection issues
- * - **Reactive State**: Svelte 5 runes for automatic UI updates
- * - **State Management**: Loading states and error recovery
- *
- * **Server Capabilities Detected:**
- * - Model name extraction from file path
- * - Vision support (multimodal image processing)
- * - Audio support (speech processing)
- * - Slots endpoint availability (for processing state monitoring)
- * - Context window size and token limits
+ * - **Server State**: Connection status, loading, error handling
+ * - **Role Detection**: MODEL (single model) vs ROUTER (multi-model)
+ * - **Default Params**: Server-wide generation defaults
  */
 class ServerStore {
-	private _serverProps = $state<ApiLlamaCppServerProps | null>(null);
-	private _loading = $state(false);
-	private _error = $state<string | null>(null);
-	private _slotsEndpointAvailable = $state<boolean | null>(null);
+	/**
+	 *
+	 *
+	 * State
+	 *
+	 *
+	 */
 
-	get serverProps(): ApiLlamaCppServerProps | null {
-		return this._serverProps;
+	props = $state<ApiLlamaCppServerProps | null>(null);
+	loading = $state(false);
+	error = $state<string | null>(null);
+	role = $state<ServerRole | null>(null);
+	private fetchPromise: Promise<void> | null = null;
+
+	/**
+	 *
+	 *
+	 * Getters
+	 *
+	 *
+	 */
+
+	get defaultParams(): ApiLlamaCppServerProps['default_generation_settings']['params'] | null {
+		return this.props?.default_generation_settings?.params || null;
 	}
 
-	get loading(): boolean {
-		return this._loading;
+	get contextSize(): number | null {
+		const nCtx = this.props?.default_generation_settings?.n_ctx;
+
+		return typeof nCtx === 'number' ? nCtx : null;
 	}
 
-	get error(): string | null {
-		return this._error;
+	get webuiSettings(): Record<string, string | number | boolean> | undefined {
+		return this.props?.webui_settings;
 	}
 
-	get modelName(): string | null {
-		if (!this._serverProps?.model_path) return null;
-		return this._serverProps.model_path.split(/(\\|\/)/).pop() || null;
+	get isRouterMode(): boolean {
+		return this.role === ServerRole.ROUTER;
 	}
 
-	get supportedModalities(): string[] {
-		const modalities: string[] = [];
-		if (this._serverProps?.modalities?.audio) {
-			modalities.push('audio');
-		}
-		if (this._serverProps?.modalities?.vision) {
-			modalities.push('vision');
-		}
-		return modalities;
-	}
-
-	get supportsVision(): boolean {
-		return this._serverProps?.modalities?.vision ?? false;
-	}
-
-	get supportsAudio(): boolean {
-		return this._serverProps?.modalities?.audio ?? false;
-	}
-
-	get slotsEndpointAvailable(): boolean | null {
-		return this._slotsEndpointAvailable;
+	get isModelMode(): boolean {
+		return this.role === ServerRole.MODEL;
 	}
 
 	/**
-	 * Check if slots endpoint is available based on server properties and endpoint support
+	 *
+	 *
+	 * Data Handling
+	 *
+	 *
 	 */
-	private async checkSlotsEndpointAvailability(): Promise<void> {
-		if (!this._serverProps) {
-			this._slotsEndpointAvailable = false;
-			return;
-		}
 
-		if (this._serverProps.total_slots <= 0) {
-			this._slotsEndpointAvailable = false;
-			return;
-		}
+	async fetch(): Promise<void> {
+		if (this.fetchPromise) return this.fetchPromise;
 
-		try {
-			const currentConfig = config();
-			const apiKey = currentConfig.apiKey?.toString().trim();
+		this.loading = true;
+		this.error = null;
 
-			const response = await fetch('/slots', {
-				headers: {
-					...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
-				}
-			});
-
-			if (response.status === 501) {
-				console.info('Slots endpoint not implemented - server started without --slots flag');
-				this._slotsEndpointAvailable = false;
-				return;
+		const fetchPromise = (async () => {
+			try {
+				const props = await PropsService.fetch();
+				this.props = props;
+				this.error = null;
+				this.detectRole(props);
+			} catch (error) {
+				this.error = this.getErrorMessage(error);
+				console.error('Error fetching server properties:', error);
+			} finally {
+				this.loading = false;
+				this.fetchPromise = null;
 			}
+		})();
 
-			this._slotsEndpointAvailable = true;
-		} catch (error) {
-			console.warn('Unable to test slots endpoint availability:', error);
-			this._slotsEndpointAvailable = false;
-		}
+		this.fetchPromise = fetchPromise;
+		await fetchPromise;
 	}
 
-	/**
-	 * Fetches server properties from the server
-	 */
-	async fetchServerProps(): Promise<void> {
-		this._loading = true;
-		this._error = null;
+	private getErrorMessage(error: unknown): string {
+		if (error instanceof Error) {
+			const message = error.message || '';
 
-		try {
-			console.log('Fetching server properties...');
-			const props = await ChatService.getServerProps();
-			this._serverProps = props;
-			console.log('Server properties loaded:', props);
-
-			// Check slots endpoint availability after server props are loaded
-			await this.checkSlotsEndpointAvailability();
-		} catch (error) {
-			let errorMessage = 'Failed to connect to server';
-
-			if (error instanceof Error) {
-				// Handle specific error types with user-friendly messages
-				if (error.name === 'TypeError' && error.message.includes('fetch')) {
-					errorMessage = 'Server is not running or unreachable';
-				} else if (error.message.includes('ECONNREFUSED')) {
-					errorMessage = 'Connection refused - server may be offline';
-				} else if (error.message.includes('ENOTFOUND')) {
-					errorMessage = 'Server not found - check server address';
-				} else if (error.message.includes('ETIMEDOUT')) {
-					errorMessage = 'Connection timeout - server may be overloaded';
-				} else if (error.message.includes('500')) {
-					errorMessage = 'Server error - check server logs';
-				} else if (error.message.includes('404')) {
-					errorMessage = 'Server endpoint not found';
-				} else if (error.message.includes('403') || error.message.includes('401')) {
-					errorMessage = 'Access denied';
-				}
+			if (error.name === 'TypeError' && message.includes('fetch')) {
+				return 'Server is not running or unreachable';
+			} else if (message.includes('ECONNREFUSED')) {
+				return 'Connection refused - server may be offline';
+			} else if (message.includes('ENOTFOUND')) {
+				return 'Server not found - check server address';
+			} else if (message.includes('ETIMEDOUT')) {
+				return 'Request timed out';
+			} else if (message.includes('503')) {
+				return 'Server temporarily unavailable';
+			} else if (message.includes('500')) {
+				return 'Server error - check server logs';
+			} else if (message.includes('404')) {
+				return 'Server endpoint not found';
+			} else if (message.includes('403') || message.includes('401')) {
+				return 'Access denied';
 			}
-
-			this._error = errorMessage;
-			console.error('Error fetching server properties:', error);
-		} finally {
-			this._loading = false;
 		}
+
+		return 'Failed to connect to server';
 	}
 
-	/**
-	 * Clears the server state
-	 */
 	clear(): void {
-		this._serverProps = null;
-		this._error = null;
-		this._loading = false;
-		this._slotsEndpointAvailable = null;
+		this.props = null;
+		this.error = null;
+		this.loading = false;
+		this.role = null;
+		this.fetchPromise = null;
+	}
+
+	/**
+	 *
+	 *
+	 * Utilities
+	 *
+	 *
+	 */
+
+	private detectRole(props: ApiLlamaCppServerProps): void {
+		const newRole = props?.role === ServerRole.ROUTER ? ServerRole.ROUTER : ServerRole.MODEL;
+		if (this.role !== newRole) {
+			this.role = newRole;
+			console.info(`Server running in ${newRole === ServerRole.ROUTER ? 'ROUTER' : 'MODEL'} mode`);
+		}
 	}
 }
 
 export const serverStore = new ServerStore();
 
-export const serverProps = () => serverStore.serverProps;
+export const serverProps = () => serverStore.props;
 export const serverLoading = () => serverStore.loading;
 export const serverError = () => serverStore.error;
-export const modelName = () => serverStore.modelName;
-export const supportedModalities = () => serverStore.supportedModalities;
-export const supportsVision = () => serverStore.supportsVision;
-export const supportsAudio = () => serverStore.supportsAudio;
-export const slotsEndpointAvailable = () => serverStore.slotsEndpointAvailable;
+export const serverRole = () => serverStore.role;
+export const defaultParams = () => serverStore.defaultParams;
+export const contextSize = () => serverStore.contextSize;
+export const isRouterMode = () => serverStore.isRouterMode;
+export const isModelMode = () => serverStore.isModelMode;
