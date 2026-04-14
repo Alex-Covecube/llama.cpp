@@ -653,7 +653,7 @@ private:
         }
 
         if (!llama_threadpool_init(ctx, params_base.cpuparams, params_base.cpuparams_batch, nullptr, nullptr, nullptr)) {
-            SRV_ERR("failed to initialize threadpool\n");
+            SRV_ERR("%s", "failed to initialize threadpool\n");
             return false;
         }
 
